@@ -1,12 +1,15 @@
 use elasticsearch::Error;
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::condition::Condition;
 
+#[derive(Deserialize)]
 struct Document {
     event: Event,
+    #[allow(dead_code)]
     text: String,
 }
 
@@ -67,7 +70,8 @@ pub async fn do_search(
         .unwrap_or(&vec![])
         .iter()
     {
-        let note: Event = serde_json::from_value(note["_source"]["event"].clone())?;
+        let doc: Document = serde_json::from_value(note["_source"].clone())?;
+        let note: Event = doc.event;
         notes.push(note);
     }
     if since.is_none() {
