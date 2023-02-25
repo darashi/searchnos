@@ -183,8 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // env vars
     let es_url = env::var("ES_URL").expect("ES_URL is not set; set it to the URL of elasticsearch");
-    let relays = env::var("NOSTR_RELAY")
-        .expect("NOSTR_RELAY is not set; set it to the comma-separated URLs of relays");
+    let relays = env::var("NOSTR_RELAYS")
+        .expect("NOSTR_RELAYS is not set; set it to the comma-separated URLs of relays");
 
     // prepare elasticsearch client
     let es_url = Url::parse(&es_url).expect("invalid elasticsearch url");

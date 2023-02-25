@@ -26,7 +26,7 @@ services:
     container_name: indexer
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
-      - NOSTR_RELAY=${NOSTR_RELAY}
+      - NOSTR_RELAYS=${NOSTR_RELAYS}
     restart: on-failure
     depends_on:
       - es

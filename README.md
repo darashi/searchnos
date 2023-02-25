@@ -34,4 +34,4 @@ Search:
 
 See `docker-compose.yaml` and `.env.example` for the configuration.
 
-`NOSTR_RELAY` can be a comma-separated list of relay URLs.
+`NOSTR_RELAYS` can be a comma-separated list of relay URLs.
