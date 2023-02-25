@@ -2,10 +2,6 @@ FROM rust:1.67 AS builder
 
 WORKDIR /usr/src/app
 
-RUN mkdir -p src/searcher  && echo "fn main() {}" > src/searcher/main.rs
-COPY Cargo.toml Cargo.lock ./
-RUN cargo build --release --bin searcher
-
 COPY . .
 RUN cargo install --path .
 
