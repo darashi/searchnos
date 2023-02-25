@@ -1,0 +1,51 @@
+---
+version: "3"
+services:
+  es:
+    build: ./docker/es
+    container_name: es
+    environment:
+      - "discovery.type=single-node"
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "ELASTIC_PASSWORD=${ELASTIC_PASSWORD}"
+      - "http.cors.enabled=true"
+      - 'http.cors.allow-origin="*"'
+      - "xpack.security.http.ssl.enabled=false"
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - 9200:9200
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+  indexer:
+    build:
+      context: .
+      dockerfile: ./docker/indexer/Dockerfile
+    container_name: indexer
+    environment:
+      - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
+      - NOSTR_RELAY=${NOSTR_RELAY}
+    restart: on-failure
+    depends_on:
+      - es
+
+  searcher:
+    build:
+      context: .
+      dockerfile: ./docker/searcher/Dockerfile
+    container_name: searcher
+    environment:
+      - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
+      - PORT=3000
+    restart: on-failure
+    depends_on:
+      - es
+    ports:
+      - 3000:3000
+
+volumes:
+  es-data:
+    driver: local
