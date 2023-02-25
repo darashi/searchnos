@@ -5,6 +5,11 @@ use serde_json::Value;
 
 use crate::condition::Condition;
 
+struct Document {
+    event: Event,
+    text: String,
+}
+
 pub async fn do_search(
     es_client: &Elasticsearch,
     index_name: &String,
@@ -15,7 +20,7 @@ pub async fn do_search(
     let q = json!({
         "simple_query_string": {
             "query": phrase,
-            "fields": ["content"],
+            "fields": ["text"],
             "default_operator": "and"
         }
     });
@@ -27,7 +32,7 @@ pub async fn do_search(
                         q,
                         {
                             "range": {
-                                "created_at": {
+                                "event.created_at": {
                                     "gt": format!("{}", t)
                                 }
                             }
@@ -43,9 +48,9 @@ pub async fn do_search(
     // If `since` is specified, we search notes in chronological order.
     // Otherwise, we search notes in reverse chronological order.
     let order = if since.is_some() {
-        "created_at:asc"
+        "event.created_at:asc"
     } else {
-        "created_at:desc"
+        "event.created_at:desc"
     };
 
     let search_response = es_client
@@ -62,7 +67,7 @@ pub async fn do_search(
         .unwrap_or(&vec![])
         .iter()
     {
-        let note: Event = serde_json::from_value(note["_source"].clone())?;
+        let note: Event = serde_json::from_value(note["_source"]["event"].clone())?;
         notes.push(note);
     }
     if since.is_none() {

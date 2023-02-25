@@ -9,6 +9,7 @@ use elasticsearch::{
 use env_logger;
 use log::{error, info, warn};
 use nostr_sdk::prelude::*;
+use serde::Serialize;
 use std::env;
 
 async fn create_index(
@@ -55,31 +56,41 @@ async fn create_index(
                 },
             },
             "mappings": {
+                "dynamic": false,
                 "properties": {
-                    "content": {
+                    "event": {
+                        "dynamic": false,
+                        "properties": {
+                            "content": {
+                                "type": "text",
+                                "index": false
+                            },
+                            "created_at": {
+                                "type": "date",
+                                "format": "epoch_second"
+                            },
+                            "kind": {
+                                "type": "integer"
+                            },
+                            "id": {
+                                "type": "keyword"
+                            },
+                            "pubkey": {
+                                "type": "keyword"
+                            },
+                            "sig": {
+                                "type": "keyword",
+                                "index": false
+                            },
+                            "tags": {
+                                "type": "keyword"
+                            },
+                        }
+                    },
+                    "text": {
                         "type": "text",
                         "analyzer": "ngram_analyzer",
                         "index": "true",
-                    },
-                    "created_at": {
-                        "type": "date",
-                        "format": "epoch_second"
-                    },
-                    "kind": {
-                        "type": "integer"
-                    },
-                    "id": {
-                        "type": "keyword"
-                    },
-                    "pubkey": {
-                        "type": "keyword"
-                    },
-                    "sig": {
-                        "type": "keyword",
-                        "index": false
-                    },
-                    "tags": {
-                        "type": "keyword"
                     },
                 }
             }
@@ -95,6 +106,12 @@ async fn create_index(
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct Document {
+    event: Event,
+    text: String,
+}
+
 async fn handle_text_note(
     es_client: &Elasticsearch,
     index_name: &str,
@@ -102,9 +119,13 @@ async fn handle_text_note(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", event.as_json());
     let id = event.id.to_hex();
+    let doc = Document {
+        event: event.clone(),
+        text: event.content.clone(),
+    };
     let res = es_client
         .index(IndexParts::IndexId(index_name, &id))
-        .body(event)
+        .body(doc)
         .send()
         .await?;
     if !res.status_code().is_success() {
@@ -125,7 +146,7 @@ async fn handle_deletion_event(
     for tag in &deletion_event.tags {
         if let Tag::Event(e, _, _) = tag {
             let id = e.to_hex();
-            println!("try to delete: id={}", id);
+            info!("try to delete: id={}", id);
             let res = es_client
                 .get(GetParts::IndexId(&index_name, &id))
                 .send()
@@ -144,12 +165,12 @@ async fn handle_deletion_event(
                 error!("failed to fetch; received {}, {}", status_code, body);
                 continue;
             }
-            let event = res.json::<serde_json::Value>().await?;
-            let event: Event = serde_json::from_value(event["_source"].clone())?;
+            let hit = res.json::<serde_json::Value>().await?;
+            let event: Event = serde_json::from_value(hit["_source"]["event"].clone())?;
 
             let pubkey = event.pubkey;
             let ok_to_delete = deletion_event.pubkey == pubkey;
-            info!("ok?={} event to delete: {}", ok_to_delete, event.as_json());
+            info!("can event {} be deleted? {}", event.as_json(), ok_to_delete);
             if !ok_to_delete {
                 error!("pubkey mismatch: pub key of deletion event {} was {}, but that of the event {} was {}",
                     deletion_event.id, deletion_event.pubkey, id, pubkey);
