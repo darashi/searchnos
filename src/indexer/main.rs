@@ -7,7 +7,7 @@ use elasticsearch::{
     DeleteParts, Elasticsearch, GetParts, IndexParts,
 };
 use env_logger;
-use log::{error, info, warn};
+use log::{error, info};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
 use std::env;
@@ -136,6 +136,53 @@ async fn handle_text_note(
     Ok(())
 }
 
+async fn delete_event(
+    es_client: &Elasticsearch,
+    index_name: &str,
+    id: &str,
+    pubkey: &XOnlyPublicKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("try to delete: id={}", id);
+    let res = es_client
+        .get(GetParts::IndexId(&index_name, &id))
+        .send()
+        .await?;
+    if res.status_code() == 404 {
+        return Err(format!("event not found; id={}", id).into());
+    }
+    if !res.status_code().is_success() {
+        let status_code = res.status_code();
+        let body = res.text().await?;
+        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+    }
+    let hit = res.json::<serde_json::Value>().await?;
+
+    let event = serde_json::from_value::<Event>(hit["_source"]["event"].clone())?;
+
+    let ok_to_delete = *pubkey == event.pubkey;
+    info!("can event {} be deleted? {}", event.id, ok_to_delete);
+    if !ok_to_delete {
+        return Err(format!(
+            "pubkey mismatch: pub key was {}, but that of the event {} was {}",
+            pubkey, id, event.pubkey
+        )
+        .into());
+    }
+    let res = es_client
+        .delete(DeleteParts::IndexId(&index_name, &id))
+        .send()
+        .await?;
+
+    if !res.status_code().is_success() {
+        let status_code = res.status_code();
+        let body = res.text().await?;
+        error!("failed to delete; received {}, {}", status_code, body);
+        return Err("failed to delete".into());
+    }
+    info!("deleted: id={}", id);
+    Ok(())
+}
+
 async fn handle_deletion_event(
     es_client: &Elasticsearch,
     index_name: &str,
@@ -146,52 +193,11 @@ async fn handle_deletion_event(
     for tag in &deletion_event.tags {
         if let Tag::Event(e, _, _) = tag {
             let id = e.to_hex();
-            info!("try to delete: id={}", id);
-            let res = es_client
-                .get(GetParts::IndexId(&index_name, &id))
-                .send()
-                .await;
-            if res.is_err() {
-                error!("failed to fetch; {}", res.err().unwrap());
+            let result = delete_event(es_client, index_name, &id, &deletion_event.pubkey).await;
+            if result.is_err() {
+                error!("failed to delete event; {}", result.err().unwrap());
                 continue;
             }
-            let res = res.unwrap();
-            if res.status_code() == 404 {
-                warn!("event not found; id={}", id);
-                continue;
-            } else if !res.status_code().is_success() {
-                let status_code = res.status_code();
-                let body = res.text().await?;
-                error!("failed to fetch; received {}, {}", status_code, body);
-                continue;
-            }
-            let hit = res.json::<serde_json::Value>().await?;
-            let event: Event = serde_json::from_value(hit["_source"]["event"].clone())?;
-
-            let pubkey = event.pubkey;
-            let ok_to_delete = deletion_event.pubkey == pubkey;
-            info!("can event {} be deleted? {}", event.as_json(), ok_to_delete);
-            if !ok_to_delete {
-                error!("pubkey mismatch: pub key of deletion event {} was {}, but that of the event {} was {}",
-                    deletion_event.id, deletion_event.pubkey, id, pubkey);
-                continue;
-            }
-            let res = es_client
-                .delete(DeleteParts::IndexId(&index_name, &id))
-                .send()
-                .await;
-            if res.is_err() {
-                error!("failed to delete; {}", res.err().unwrap());
-                continue;
-            }
-            let res = res.unwrap();
-            if !res.status_code().is_success() {
-                let status_code = res.status_code();
-                let body = res.text().await?;
-                error!("failed to delete; received {}, {}", status_code, body);
-                continue;
-            }
-            info!("deleted: id={}", id);
         }
     }
     Ok(())
