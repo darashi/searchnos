@@ -968,7 +968,7 @@ dependencies = [
 [[package]]
 name = "nostr"
 version = "0.18.0"
-source = "git+https://github.com/rust-nostr/nostr.git?branch=master#4f8cafe8158fee784d4694d5cac8cfc3468cfa6e"
+source = "git+https://github.com/rust-nostr/nostr.git?branch=master#42b1359ff69d0b8ab76261e83237d7eec802faf4"
 dependencies = [
  "aes",
  "base64 0.21.0",
@@ -1005,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "nostr-sdk"
 version = "0.18.0"
-source = "git+https://github.com/rust-nostr/nostr.git?branch=master#4f8cafe8158fee784d4694d5cac8cfc3468cfa6e"
+source = "git+https://github.com/rust-nostr/nostr.git?branch=master#42b1359ff69d0b8ab76261e83237d7eec802faf4"
 dependencies = [
  "futures-util",
  "log 0.4.17",
@@ -1323,15 +1323,6 @@ name = "regex-syntax"
 version = "0.6.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456c603be3e8d448b072f410900c09faf164fbce2d480456f50eea6e25f9c848"
-
-[[package]]
-name = "remove_dir_all"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3acd125665422973a33ac9d3dd2df85edad0f4ae9b00dafb1a05e43a9f5ef8e7"
-dependencies = [
- "winapi",
-]
 
 [[package]]
 name = "reqwest"
@@ -1711,16 +1702,15 @@ checksum = "2047c6ded9c721764247e62cd3b03c09ffc529b2ba5b10ec482ae507a4a70160"
 
 [[package]]
 name = "tempfile"
-version = "3.3.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cdb1ef4eaeeaddc8fbd371e5017057064af0911902ef36b39801f67cc6d79e4"
+checksum = "af18f7ae1acd354b992402e9ec5864359d693cd8a79dcbef59f76891701c1e95"
 dependencies = [
  "cfg-if",
  "fastrand",
- "libc",
  "redox_syscall",
- "remove_dir_all",
- "winapi",
+ "rustix",
+ "windows-sys 0.42.0",
 ]
 
 [[package]]
