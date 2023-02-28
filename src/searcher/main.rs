@@ -33,6 +33,7 @@ use tower_http::add_extension::AddExtensionLayer;
 
 use crate::condition::Condition;
 use crate::engine::Engine;
+
 #[derive(Debug)]
 struct AppState {
     engine: Engine,
@@ -102,7 +103,7 @@ async fn handler(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
                                         }
 
                                         // search older notes
-                                        let notes = state.engine.search_once(&condition).await;
+                                        let notes = state.engine.search_once(&condition, &filter.limit).await;
                                         if notes.is_err() {
                                             error!("{}: {:?}", addr, notes);
                                             let _ = sender.lock().await.send(Message::Text(make_notice("Can't search".to_string()))).await;

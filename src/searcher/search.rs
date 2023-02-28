@@ -17,7 +17,8 @@ pub async fn do_search(
     es_client: &Elasticsearch,
     index_name: &String,
     condition: &Condition,
-    since: Option<u64>,
+    since: &Option<u64>,
+    limit: &Option<usize>,
 ) -> Result<Vec<Event>, Error> {
     let phrase = condition.query();
     let q = json!({
@@ -55,12 +56,16 @@ pub async fn do_search(
     } else {
         "event.created_at:desc"
     };
+    const MAX_LIMIT: usize = 10_000;
+    let size = limit
+        .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
+        .unwrap_or(MAX_LIMIT) as i64;
 
     let search_response = es_client
         .search(SearchParts::Index(&[index_name.as_str()]))
         .body(query)
         .sort(&vec![order])
-        .size(1_000)
+        .size(size)
         .send()
         .await?;
     let response_body = search_response.json::<Value>().await?;

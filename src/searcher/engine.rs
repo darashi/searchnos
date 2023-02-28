@@ -75,8 +75,12 @@ impl Engine {
             .remove(&subscription_id);
     }
 
-    pub async fn search_once(&self, condition: &Condition) -> Result<Vec<Event>, Error> {
-        do_search(&self.es_client, &self.index_name, &condition, None).await
+    pub async fn search_once(
+        &self,
+        condition: &Condition,
+        limit: &Option<usize>,
+    ) -> Result<Vec<Event>, Error> {
+        do_search(&self.es_client, &self.index_name, &condition, &None, limit).await
     }
 
     pub async fn search(&self) {
@@ -109,8 +113,14 @@ impl Engine {
                 .get(&condition)
                 .cloned()
                 .unwrap_or(None);
-            let notes =
-                do_search(&self.es_client, &self.index_name, &condition, latest_known).await;
+            let notes = do_search(
+                &self.es_client,
+                &self.index_name,
+                &condition,
+                &latest_known,
+                &None,
+            )
+            .await;
             if notes.is_err() {
                 error!("QUERY {:?} failed", condition);
                 continue;
