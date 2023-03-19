@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate serde_json;
-
 use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     indices::{IndicesCreateParts, IndicesExistsParts},
