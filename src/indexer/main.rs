@@ -5,6 +5,8 @@ use elasticsearch::{
     DeleteParts, Elasticsearch, IndexParts, SearchParts,
 };
 use env_logger;
+use lingua::LanguageDetector;
+use lingua::LanguageDetectorBuilder;
 use log::{error, info};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
@@ -105,6 +107,7 @@ async fn create_index_template(
 struct Document {
     event: Event,
     text: String,
+    language: String,
 }
 
 fn index_name_for_event(prefix: &str, event: &Event) -> Result<String, Box<dyn std::error::Error>> {
@@ -118,15 +121,23 @@ fn index_name_for_event(prefix: &str, event: &Event) -> Result<String, Box<dyn s
 
 async fn handle_text_note(
     es_client: &Elasticsearch,
+    language_detector: &LanguageDetector,
     index_prefix: &str,
     event: &Event,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let language = language_detector.detect_language_of(&event.content);
+    let language = match language {
+        Some(l) => l.iso_code_639_1().to_string(),
+        None => "unknown".to_string(),
+    };
+
     let index_name = index_name_for_event(index_prefix, event)?;
-    println!("{} {}", index_name, event.as_json());
+    println!("{} {} {}", index_name, language, event.as_json());
     let id = event.id.to_hex();
     let doc = Document {
         event: event.clone(),
         text: event.content.clone(),
+        language,
     };
     let res = es_client
         .index(IndexParts::IndexId(index_name.as_str(), &id))
@@ -252,6 +263,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     create_index_template(&es_client, index_template_name).await?;
     info!("elasticsearch index ready");
 
+    // prepare lingua
+    info!("loading language models");
+    let language_detector = LanguageDetectorBuilder::from_all_languages()
+        .with_preloaded_language_models()
+        .build();
+    info!("language models loaded");
+
     // prepare nostr client
     let my_keys: Keys = Keys::generate();
     let nostr_client = Client::new(&my_keys);
@@ -275,7 +293,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let RelayPoolNotification::Event(_url, event) = notification {
                 match event.kind {
                     Kind::TextNote => {
-                        handle_text_note(&es_client, &index_template_name, &event).await?;
+                        handle_text_note(
+                            &es_client,
+                            &language_detector,
+                            &index_template_name,
+                            &event,
+                        )
+                        .await?;
                     }
                     Kind::EventDeletion => {
                         handle_deletion_event(&es_client, &index_template_name, &event).await?;
