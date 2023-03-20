@@ -18,11 +18,7 @@ services:
       - 9200:9200
     volumes:
       - es-data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: curl -u elastic:${ELASTIC_PASSWORD} -s -f es:9200/_cat/health > /dev/null || exit 1
-      interval: 30s
-      timeout: 10s
-      retries: 5
+
   indexer:
     build:
       context: .
