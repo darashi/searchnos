@@ -951,23 +951,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostrsearch"
-version = "0.1.0"
-dependencies = [
- "axum",
- "elasticsearch",
- "env_logger",
- "futures",
- "log",
- "nostr-sdk",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
- "tungstenite",
-]
-
-[[package]]
 name = "num_cpus"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1314,6 +1297,23 @@ checksum = "d53dcdb7c9f8158937a7981b48accfd39a43af418591a5d008c7b22b5e1b7ca4"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "searchnos"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "elasticsearch",
+ "env_logger",
+ "futures",
+ "log",
+ "nostr-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "tungstenite",
 ]
 
 [[package]]
