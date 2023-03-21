@@ -18,6 +18,8 @@ services:
       - 9200:9200
     volumes:
       - es-data:/usr/share/elasticsearch/data
+    restart: always
+
 
   indexer:
     build:
@@ -27,7 +29,7 @@ services:
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - NOSTR_RELAYS=${NOSTR_RELAYS}
-    restart: on-failure
+    restart: always
     depends_on:
       es:
         condition: service_healthy
@@ -40,7 +42,7 @@ services:
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
-    restart: on-failure
+    restart: always
     depends_on:
       es:
         condition: service_healthy
