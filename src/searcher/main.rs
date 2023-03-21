@@ -218,6 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<u16>()
         .expect("PORT is not a valid port number");
 
+    info!("connecting to elasticsearch");
+
     // prepare elasticsearch client
     let es_url = Url::parse(&es_url).expect("invalid elasticsearch url");
     let conn_pool = SingleNodeConnectionPool::new(es_url);
