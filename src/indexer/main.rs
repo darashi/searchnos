@@ -154,6 +154,8 @@ async fn handle_text_note(
     };
 
     let index_name = index_name_for_event(index_prefix, event)?;
+    info!("{} {} {}", index_name, language, event.as_json());
+
     // TODO parameterize ttl
     let ok = can_exist(&index_name, &Utc::now(), 7, 1).unwrap_or(false);
     if !ok {
