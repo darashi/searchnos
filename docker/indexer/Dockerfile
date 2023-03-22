@@ -2,10 +2,6 @@ FROM rust:1.68 AS builder
 
 WORKDIR /usr/src/app
 
-COPY ./Cargo.* ./
-RUN mkdir -p src/indexer && echo "fn main() {}" > src/indexer/main.rs
-RUN cargo build --release --bin indexer
-
 COPY . .
 RUN cargo install --path . --bin indexer
 
