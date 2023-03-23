@@ -2,19 +2,66 @@ use chrono::{DateTime, TimeZone, Utc};
 use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     indices::IndicesPutIndexTemplateParts,
+    ingest::IngestPutPipelineParts,
     DeleteParts, Elasticsearch, IndexParts, SearchParts,
 };
 use env_logger;
-use lingua::LanguageDetector;
-use lingua::LanguageDetectorBuilder;
 use log::{error, info, warn};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
 use std::env;
 
+async fn put_pipeline(
+    es_client: &Elasticsearch,
+    pipeline_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("putting pipeline: {}", pipeline_name);
+    let res = es_client
+        .ingest()
+        .put_pipeline(IngestPutPipelineParts::Id(pipeline_name))
+        .body(json!({
+            "description": "nostr pipeline",
+            "processors": [
+                {
+                    "inference": {
+                        "model_id": "lang_ident_model_1",
+                        "inference_config": {
+                            "classification": {
+                                "num_top_classes": 3
+                            }
+                        },
+                        "field_mappings": {},
+                        "target_field": "_ml.lang_ident"
+                    }
+                },
+                {
+                    "rename": {
+                        "field": "_ml.lang_ident.predicted_value",
+                        "target_field": "language"
+                    }
+                },
+                {
+                    "remove": {
+                        "field": "_ml"
+                    }
+                }
+            ]
+        }))
+        .send()
+        .await?;
+
+    if !res.status_code().is_success() {
+        let status = res.status_code();
+        let body = res.text().await?;
+        return Err(format!("failed to put pipeline: received {}, {}", status, body).into());
+    }
+    Ok(())
+}
+
 async fn create_index_template(
     es_client: &Elasticsearch,
     template_name: &str,
+    pipeline_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("putting index template: {}", template_name);
     let res = es_client
@@ -28,21 +75,22 @@ async fn create_index_template(
                         "number_of_shards": 1,
                         "number_of_replicas": 0,
                         "analysis": {
-                        "analyzer": {
-                            "ngram_analyzer": {
-                            "type": "custom",
-                            "tokenizer": "ngram_tokenizer",
-                            "filter": ["icu_normalizer", "lowercase"],
+                            "analyzer": {
+                                "ngram_analyzer": {
+                                "type": "custom",
+                                "tokenizer": "ngram_tokenizer",
+                                "filter": ["icu_normalizer", "lowercase"],
+                                },
+                            },
+                            "tokenizer": {
+                                "ngram_tokenizer": {
+                                "type": "ngram",
+                                "min_gram": "1",
+                                "max_gram": "2",
+                                },
                             },
                         },
-                        "tokenizer": {
-                            "ngram_tokenizer": {
-                            "type": "ngram",
-                            "min_gram": "1",
-                            "max_gram": "2",
-                            },
-                        },
-                        },
+                        "default_pipeline": pipeline_name
                     },
                 },
                 "mappings": {
@@ -107,7 +155,6 @@ async fn create_index_template(
 struct Document {
     event: Event,
     text: String,
-    language: String,
 }
 
 const DATE_FORMAT: &str = "%Y.%m.%d";
@@ -143,18 +190,11 @@ fn can_exist(
 
 async fn handle_text_note(
     es_client: &Elasticsearch,
-    language_detector: &LanguageDetector,
     index_prefix: &str,
     event: &Event,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let language = language_detector.detect_language_of(&event.content);
-    let language = match language {
-        Some(l) => l.iso_code_639_1().to_string(),
-        None => "unknown".to_string(),
-    };
-
     let index_name = index_name_for_event(index_prefix, event)?;
-    info!("{} {} {}", index_name, language, event.as_json());
+    info!("{} {}", index_name, event.as_json());
 
     // TODO parameterize ttl
     let ok = can_exist(&index_name, &Utc::now(), 7, 1).unwrap_or(false);
@@ -167,7 +207,6 @@ async fn handle_text_note(
     let doc = Document {
         event: event.clone(),
         text: event.content.clone(),
-        language,
     };
     let res = es_client
         .index(IndexParts::IndexId(index_name.as_str(), &id))
@@ -289,16 +328,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn_pool = SingleNodeConnectionPool::new(es_url);
     let es_transport = TransportBuilder::new(conn_pool).disable_proxy().build()?;
     let es_client = Elasticsearch::new(es_transport);
-    let index_template_name = "nostr";
-    create_index_template(&es_client, index_template_name).await?;
-    info!("elasticsearch index ready");
+    let pipeline_name = "nostr-pipeline";
+    put_pipeline(&es_client, pipeline_name).await?;
 
-    // prepare lingua
-    info!("loading language models");
-    let language_detector = LanguageDetectorBuilder::from_all_languages()
-        .with_preloaded_language_models()
-        .build();
-    info!("language models loaded");
+    let index_template_name = "nostr";
+    create_index_template(&es_client, index_template_name, pipeline_name).await?;
+    info!("elasticsearch index ready");
 
     // prepare nostr client
     let my_keys: Keys = Keys::generate();
@@ -325,13 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let RelayPoolNotification::Event(_url, event) = notification {
                 match event.kind {
                     Kind::TextNote => {
-                        handle_text_note(
-                            &es_client,
-                            &language_detector,
-                            &index_template_name,
-                            &event,
-                        )
-                        .await?;
+                        handle_text_note(&es_client, &index_template_name, &event).await?;
                     }
                     Kind::EventDeletion => {
                         handle_deletion_event(&es_client, &index_template_name, &event).await?;
