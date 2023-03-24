@@ -1,4 +1,3 @@
-use elasticsearch::Error;
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
 use serde::Deserialize;
@@ -19,7 +18,7 @@ pub async fn do_search(
     condition: &Condition,
     since: &Option<u64>,
     limit: &Option<usize>,
-) -> Result<Vec<Event>, Error> {
+) -> Result<Vec<Event>, elasticsearch::Error> {
     let phrase = condition.query();
     let q = json!({
         "simple_query_string": {

@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use elasticsearch::{Elasticsearch, Error};
+use elasticsearch::Elasticsearch;
 use log::{error, info};
 use nostr_sdk::prelude::Event;
 use tokio::sync::broadcast;
@@ -79,7 +79,7 @@ impl Engine {
         &self,
         condition: &Condition,
         limit: &Option<usize>,
-    ) -> Result<Vec<Event>, Error> {
+    ) -> Result<Vec<Event>, elasticsearch::Error> {
         do_search(&self.es_client, &self.index_name, &condition, &None, limit).await
     }
 
