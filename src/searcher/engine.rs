@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    error::Error,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -79,7 +80,7 @@ impl Engine {
         &self,
         condition: &Condition,
         limit: &Option<usize>,
-    ) -> Result<Vec<Event>, elasticsearch::Error> {
+    ) -> Result<Vec<Event>, Box<dyn Error + Send + Sync>> {
         do_search(&self.es_client, &self.index_name, &condition, &None, limit).await
     }
 

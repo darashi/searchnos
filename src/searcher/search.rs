@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
 use serde::Deserialize;
@@ -18,7 +20,7 @@ pub async fn do_search(
     condition: &Condition,
     since: &Option<u64>,
     limit: &Option<usize>,
-) -> Result<Vec<Event>, elasticsearch::Error> {
+) -> Result<Vec<Event>, Box<dyn Error + Send + Sync>> {
     let phrase = condition.query();
     let q = json!({
         "simple_query_string": {
@@ -67,6 +69,11 @@ pub async fn do_search(
         .size(size)
         .send()
         .await?;
+
+    if search_response.status_code().is_success() == false {
+        return Err(format!("unexpected status code: {}", search_response.status_code()).into());
+    }
+
     let response_body = search_response.json::<Value>().await?;
     let mut notes = vec![];
     for note in response_body["hits"]["hits"]
