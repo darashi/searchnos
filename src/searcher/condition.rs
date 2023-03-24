@@ -10,3 +10,9 @@ impl Condition {
         &self.0
     }
 }
+
+impl From<&nostr_sdk::Filter> for Condition {
+    fn from(filter: &nostr_sdk::Filter) -> Self {
+        Condition::new(filter.search.clone().unwrap_or_default())
+    }
+}
