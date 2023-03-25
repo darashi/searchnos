@@ -42,6 +42,10 @@ async fn send_events(
     subscription_id: &SubscriptionId,
     events: Vec<nostr_sdk::Event>,
 ) -> anyhow::Result<()> {
+    if events.is_empty() {
+        sender.lock().await.send(Message::Ping(vec![])).await?;
+    }
+
     for event in events {
         let relay_msg = RelayMessage::new_event(subscription_id.clone(), event);
         sender
@@ -234,6 +238,7 @@ async fn process_message(
             log::info!("{} close message received", addr);
             return Ok(());
         }
+        Message::Pong(_) => {}
         _ => {
             return Err(anyhow::anyhow!("non-text message {:?}", msg));
         }
