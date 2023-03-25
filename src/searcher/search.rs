@@ -55,7 +55,7 @@ pub async fn do_search(
         json!({ "query": q })
     };
 
-    // If `since` is specified, we search notes in chronological order.
+    // If `cursor` is specified, we search notes in chronological order.
     // Otherwise, we search notes in reverse chronological order.
     let order = if cursor.is_some() {
         "timestamp:asc"
