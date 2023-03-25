@@ -25,5 +25,5 @@ serde_json = "~1"
 axum = { version = "0.6.7", features = ["ws", "headers"] }
 futures = "0.3"
 tower-http = { version = "*", features = ["add-extension"] }
-chrono = "0.4.24"
+chrono = { version = "0.4.24", features = ["serde"] }
 anyhow = "1.0.70"

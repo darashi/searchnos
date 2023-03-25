@@ -112,7 +112,6 @@ async fn send_events(
     }
 
     expire_old_ids(subscription.id_sent_at.clone()).await;
-    // TODO remove old ids
 
     Ok(())
 }
@@ -164,7 +163,7 @@ async fn handle_req(
     let limit = subscription.filter.limit;
     let notes = state.engine.search_once(&condition, &limit).await;
     match notes {
-        Ok(notes) => {
+        Ok((notes, _latest)) => {
             send_events(sender.clone(), subscription.clone(), notes).await?;
             send_eose(sender.clone(), &subscription).await?;
         }

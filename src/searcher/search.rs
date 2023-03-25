@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
 use serde::Deserialize;
@@ -7,20 +8,24 @@ use serde_json::Value;
 
 use crate::condition::Condition;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Document {
     event: Event,
     #[allow(dead_code)]
     text: String,
+    #[allow(dead_code)]
+    timestamp: DateTime<Utc>,
+    #[allow(dead_code)]
+    language: String,
 }
 
 pub async fn do_search(
     es_client: &Elasticsearch,
     index_name: &String,
     condition: &Condition,
-    since: &Option<u64>,
+    cursor: &Option<DateTime<Utc>>,
     limit: &Option<usize>,
-) -> Result<Vec<Event>, Box<dyn Error + Send + Sync>> {
+) -> Result<(Vec<Event>, Option<DateTime<Utc>>), Box<dyn Error + Send + Sync>> {
     let phrase = condition.query();
     let q = json!({
         "simple_query_string": {
@@ -29,7 +34,7 @@ pub async fn do_search(
             "default_operator": "and"
         }
     });
-    let query = if let Some(t) = since {
+    let query = if let Some(t) = cursor {
         json!({
             "query": {
                 "bool": {
@@ -37,8 +42,8 @@ pub async fn do_search(
                         q,
                         {
                             "range": {
-                                "event.created_at": {
-                                    "gt": format!("{}", t)
+                                "timestamp": {
+                                    "gt": t.to_rfc3339()
                                 }
                             }
                         }
@@ -52,10 +57,10 @@ pub async fn do_search(
 
     // If `since` is specified, we search notes in chronological order.
     // Otherwise, we search notes in reverse chronological order.
-    let order = if since.is_some() {
-        "event.created_at:asc"
+    let order = if cursor.is_some() {
+        "timestamp:asc"
     } else {
-        "event.created_at:desc"
+        "timestamp:desc"
     };
     const MAX_LIMIT: usize = 10_000;
     let size = limit
@@ -75,19 +80,31 @@ pub async fn do_search(
     }
 
     let response_body = search_response.json::<Value>().await?;
+
     let mut notes = vec![];
-    for note in response_body["hits"]["hits"]
+    let mut latest_timestamp: Option<DateTime<Utc>> = cursor.clone();
+    for hit in response_body["hits"]["hits"]
         .as_array()
         .unwrap_or(&vec![])
         .iter()
     {
-        let doc: Document = serde_json::from_value(note["_source"].clone())?;
+        let doc: Document = serde_json::from_value(hit["_source"].clone())?;
+        match latest_timestamp {
+            Some(t) => {
+                if t < doc.timestamp {
+                    latest_timestamp = Some(doc.timestamp);
+                }
+            }
+            None => {
+                latest_timestamp = Some(doc.timestamp);
+            }
+        }
         let note: Event = doc.event;
         notes.push(note);
     }
-    if since.is_none() {
+    if cursor.is_none() {
         notes.reverse();
     }
 
-    return Ok(notes);
+    return Ok((notes, latest_timestamp));
 }

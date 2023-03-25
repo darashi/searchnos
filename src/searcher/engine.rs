@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use elasticsearch::Elasticsearch;
 use log::{error, info};
 use nostr_sdk::prelude::Event;
@@ -20,7 +21,7 @@ pub struct Engine {
 
     subscriptions: Arc<Mutex<HashMap<SocketAddr, HashMap<String, Condition>>>>, // addr -> subscription_id -> condition
     senders: Arc<Mutex<HashMap<Condition, broadcast::Sender<Arc<Vec<Event>>>>>>, // condition -> sender
-    latests: Arc<Mutex<HashMap<Condition, Option<u64>>>>, // condition -> latest
+    cursors: Arc<Mutex<HashMap<Condition, Option<DateTime<Utc>>>>>, // condition -> cursor
 }
 
 impl Engine {
@@ -30,7 +31,7 @@ impl Engine {
             index_name,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             senders: Arc::new(Mutex::new(HashMap::new())),
-            latests: Arc::new(Mutex::new(HashMap::new())),
+            cursors: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -80,7 +81,7 @@ impl Engine {
         &self,
         condition: &Condition,
         limit: &Option<usize>,
-    ) -> Result<Vec<Event>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<(Vec<Event>, Option<DateTime<Utc>>), Box<dyn Error + Send + Sync>> {
         do_search(&self.es_client, &self.index_name, &condition, &None, limit).await
     }
 
@@ -90,7 +91,7 @@ impl Engine {
             let mut senders = self.senders.lock().unwrap();
             senders.retain(|_, sender| sender.receiver_count() > 0);
 
-            self.latests
+            self.cursors
                 .lock()
                 .unwrap()
                 .retain(|condition, _| senders.contains_key(condition));
@@ -107,8 +108,8 @@ impl Engine {
                 condition,
                 sender.receiver_count()
             );
-            let latest_known = self
-                .latests
+            let cursor = self
+                .cursors
                 .lock()
                 .unwrap()
                 .get(&condition)
@@ -118,7 +119,7 @@ impl Engine {
                 &self.es_client,
                 &self.index_name,
                 &condition,
-                &latest_known,
+                &cursor,
                 &None,
             )
             .await;
@@ -127,13 +128,12 @@ impl Engine {
                 continue;
             }
 
-            let notes = notes.unwrap();
-            if notes.len() > 0 {
-                let newest = notes[notes.len() - 1].created_at;
-                self.latests
+            let (notes, latest) = notes.unwrap();
+            if let Some(latest) = latest {
+                self.cursors
                     .lock()
                     .unwrap()
-                    .insert(condition.clone(), Some(newest.as_u64()));
+                    .insert(condition.clone(), Some(latest));
             }
             let _ = sender.send(Arc::new(notes));
         }
