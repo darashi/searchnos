@@ -1475,6 +1475,7 @@ dependencies = [
  "futures",
  "log",
  "nostr-sdk",
+ "rand",
  "serde",
  "serde_json",
  "tokio",

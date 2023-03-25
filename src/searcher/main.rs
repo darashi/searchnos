@@ -1,8 +1,6 @@
 #[macro_use]
 extern crate serde_json;
 
-mod condition;
-mod engine;
 mod search;
 
 use anyhow::Context;
@@ -15,6 +13,7 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::{DateTime, Utc};
 use elasticsearch::{
     http::{
         transport::{SingleNodeConnectionPool, TransportBuilder},
@@ -25,101 +24,40 @@ use elasticsearch::{
 use env_logger;
 use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{Filter, RelayMessage, SubscriptionId};
+use search::ElasticsearchQuery;
 use std::collections::HashMap;
-use std::time::SystemTime;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tower_http::add_extension::AddExtensionLayer;
 
-use crate::condition::Condition;
-use crate::engine::Engine;
-
 #[derive(Debug)]
 struct AppState {
-    engine: Engine,
-}
-
-#[derive(Debug, Clone)]
-struct Subscription {
-    id: SubscriptionId,
-    filter: Filter,
-    id_sent_at: Arc<Mutex<HashMap<String, SystemTime>>>,
-}
-
-impl From<&Vec<serde_json::Value>> for Subscription {
-    fn from(msg: &Vec<serde_json::Value>) -> Self {
-        let subscription_id = serde_json::from_value::<SubscriptionId>(msg[1].clone())
-            .context("parsing subscription id")
-            .unwrap();
-        let filter = serde_json::from_value::<Filter>(msg[2].clone())
-            .context("parsing filter")
-            .unwrap();
-
-        Subscription {
-            id: subscription_id,
-            filter,
-            id_sent_at: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-}
-
-impl Subscription {
-    fn to_condition(&self) -> Condition {
-        Condition::from(&self.filter)
-    }
-}
-
-async fn expire_old_ids(id_sent_at: Arc<Mutex<HashMap<String, SystemTime>>>) {
-    let now = SystemTime::now();
-
-    let ids_to_remove = id_sent_at
-        .lock()
-        .await
-        .iter()
-        .filter(|(_, sent_at)| now.duration_since(**sent_at).unwrap().as_secs() > 60)
-        .map(|(id, _)| id.clone())
-        .collect::<Vec<String>>();
-
-    for id in ids_to_remove {
-        id_sent_at.lock().await.remove(&id);
-    }
+    es_client: Elasticsearch,
+    index_name: String,
 }
 
 async fn send_events(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscription: Subscription,
+    subscription_id: &SubscriptionId,
     events: Vec<nostr_sdk::Event>,
 ) -> anyhow::Result<()> {
     for event in events {
-        let event_id = &event.id.to_string();
-        if subscription.id_sent_at.lock().await.contains_key(event_id) {
-            continue;
-        }
-
-        let relay_msg = RelayMessage::new_event(subscription.id.clone(), event);
-
+        let relay_msg = RelayMessage::new_event(subscription_id.clone(), event);
         sender
             .lock()
             .await
             .send(Message::Text(relay_msg.as_json()))
             .await?;
-        subscription
-            .id_sent_at
-            .lock()
-            .await
-            .insert(event_id.clone(), SystemTime::now());
     }
-
-    expire_old_ids(subscription.id_sent_at.clone()).await;
 
     Ok(())
 }
 async fn send_eose(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscription: &Subscription,
+    subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::new_eose(subscription.id.clone());
+    let relay_msg = RelayMessage::new_eose(subscription_id.clone());
     sender
         .lock()
         .await
@@ -128,16 +66,18 @@ async fn send_eose(
     Ok(())
 }
 
-async fn after_eose_transponder(
+async fn query_then_send(
+    state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscription: Subscription,
-    mut broadcat_receiver: tokio::sync::broadcast::Receiver<Arc<Vec<nostr_sdk::Event>>>,
-) {
-    while let Ok(events) = broadcat_receiver.recv().await {
-        send_events(sender.clone(), subscription.clone(), events.to_vec())
-            .await
-            .unwrap();
-    }
+    subscription_id: SubscriptionId,
+    query: search::ElasticsearchQuery,
+    cursor: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let (events, new_cursor) = query
+        .execute(&state.es_client, &state.index_name, cursor)
+        .await?;
+    send_events(sender.clone(), &subscription_id, events).await?;
+    Ok(new_cursor)
 }
 
 async fn handle_req(
@@ -147,65 +87,97 @@ async fn handle_req(
     addr: SocketAddr,
     msg: &Vec<serde_json::Value>,
 ) -> anyhow::Result<()> {
-    let subscription = Subscription::from(msg);
-    let condition: Condition = subscription.to_condition();
+    if msg.len() < 3 {
+        return Err(anyhow::anyhow!("too few arguments"));
+    }
+    let subscription_id: String =
+        serde_json::from_value(msg[1].clone()).context("invalid subscription id")?;
+    let subscription_id = SubscriptionId::new(subscription_id);
+    let filters = msg[2..].to_vec();
+
+    log::info!(
+        "{} REQ {:?} {:?}",
+        addr,
+        subscription_id.to_string(),
+        filters
+    );
 
     // expire old subscription if exists
-    stop_subscription(
-        state.clone(),
-        join_handles.clone(),
-        addr,
-        &subscription.id.clone(),
-    )
-    .await;
+    stop_subscription(join_handles.clone(), &subscription_id.clone()).await;
+
+    // prepare filters and cursors
+    let filters: Vec<Filter> = filters
+        .into_iter()
+        .map(|f| serde_json::from_value::<Filter>(f).context("parsing filter"))
+        .collect::<Result<_, _>>()?;
+    let mut cursors: Vec<Option<DateTime<Utc>>> = filters.iter().map(|_| None).collect();
 
     // do the first search
-    let limit = subscription.filter.limit;
-    let notes = state.engine.search_once(&condition, &limit).await;
-    match notes {
-        Ok((notes, _latest)) => {
-            send_events(sender.clone(), subscription.clone(), notes).await?;
-            send_eose(sender.clone(), &subscription).await?;
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("error searching: {}", e));
-        }
-    }
+    for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
+        let query = ElasticsearchQuery::from_filter(filter.clone(), None);
 
-    // spawn a task to handle the continuous search
-    let broadcat_receiver = state
-        .engine
-        .subscribe(addr, subscription.id.to_string(), condition);
-    let join_handle = tokio::spawn(after_eose_transponder(
-        sender,
-        subscription.clone(),
-        broadcat_receiver,
-    ));
+        let new_cursor = query_then_send(
+            state.clone(),
+            sender.clone(),
+            subscription_id.clone(),
+            query,
+            None,
+        );
+        *cursor = new_cursor.await?;
+    }
+    send_eose(sender.clone(), &subscription_id).await?;
+
+    let sid_ = subscription_id.clone();
+    let join_handle = tokio::spawn(async move {
+        let mut cursors = cursors;
+        loop {
+            let wait = 5.0 + (rand::random::<f64>() * 5.0); // TODO better scheduling
+            tokio::time::sleep(tokio::time::Duration::from_secs_f64(wait)).await;
+            log::info!(
+                "{} continuing search for subscription {:?}",
+                addr,
+                &sid_.to_string()
+            );
+
+            for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
+                let query = ElasticsearchQuery::from_filter(filter.clone(), *cursor);
+
+                let res =
+                    query_then_send(state.clone(), sender.clone(), sid_.clone(), query, *cursor)
+                        .await;
+                match res {
+                    Ok(new_cursor) => {
+                        *cursor = new_cursor;
+                    }
+                    Err(e) => {
+                        log::error!("error in continuing search: {:?}", e);
+                    }
+                }
+            }
+        }
+    });
     join_handles
         .lock()
         .await
-        .insert(subscription.id.to_string(), join_handle);
+        .insert(subscription_id.to_string(), join_handle);
 
     Ok(())
 }
 
 async fn stop_subscription(
-    state: Arc<AppState>,
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    addr: SocketAddr,
     subscription_id: &SubscriptionId,
 ) {
-    let subscription_id = subscription_id.to_string();
-
-    state.engine.unsubscribe(addr, subscription_id.clone());
-    let removed = join_handles.lock().await.remove(&subscription_id);
+    let removed = join_handles
+        .lock()
+        .await
+        .remove(&subscription_id.to_string());
     if let Some(task) = removed {
         task.abort();
     }
 }
 
 async fn handle_close(
-    state: Arc<AppState>,
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     addr: SocketAddr,
     msg: &Vec<serde_json::Value>,
@@ -217,7 +189,9 @@ async fn handle_close(
     let subscription_id = serde_json::from_value::<SubscriptionId>(msg[1].clone())
         .context("parsing subscription id")?;
 
-    stop_subscription(state, join_handles, addr, &subscription_id).await;
+    log::info!("{} CLOSE {:?}", addr, subscription_id.to_string());
+
+    stop_subscription(join_handles, &subscription_id).await;
 
     Ok(())
 }
@@ -236,7 +210,7 @@ async fn handle_text_message(
 
     match msg[0].as_str() {
         Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
-        Some("CLOSE") => handle_close(state, join_handles, addr, &msg).await?,
+        Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
         _ => {
             return Err(anyhow::anyhow!("invalid message type"));
         }
@@ -309,7 +283,7 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
                         None => {
                             log::info!("{} websocket connection closed", addr);
                             // unsubscribe all subscriptions
-                            state.engine.leave(addr);
+                            // state.engine.leave(addr);
 
                             // abort all ongoing tasks
                             for join_handle in join_handles.lock().await.values() {
@@ -359,11 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index_name = "nostr".to_string();
     log::info!("elasticsearch index ready");
 
-    let engine = Engine::new(es_client, index_name);
-    let app_state = Arc::new(AppState { engine });
-    let state_ = app_state.clone();
-    tokio::spawn(async move {
-        state_.engine.searcher().await;
+    let app_state = Arc::new(AppState {
+        es_client,
+        index_name,
     });
 
     let app = Router::new()

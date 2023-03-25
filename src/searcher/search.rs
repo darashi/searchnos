@@ -1,12 +1,8 @@
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
-use nostr_sdk::prelude::Event;
+use nostr_sdk::prelude::{Event, Filter};
 use serde::Deserialize;
 use serde_json::Value;
-
-use crate::condition::Condition;
 
 #[derive(Deserialize, Debug)]
 struct Document {
@@ -19,111 +15,115 @@ struct Document {
     language: String,
 }
 
-struct ElasticsearchQuery {
+#[derive(Debug, Clone)]
+pub struct ElasticsearchQuery {
     query: Value,
     size: i64,
     sort: Vec<&'static str>,
 }
 
-fn build_query(
-    condition: &Condition,
-    limit: &Option<usize>,
-    cursor: &Option<DateTime<Utc>>,
-) -> ElasticsearchQuery {
-    let phrase = condition.query();
-    let q = json!({
-        "simple_query_string": {
-            "query": phrase,
-            "fields": ["text"],
-            "default_operator": "and"
-        }
-    });
+impl ElasticsearchQuery {
+    pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
+        const MAX_LIMIT: usize = 10_000;
 
-    let query = if let Some(t) = cursor {
-        json!({
-            "query": {
-                "bool": {
-                    "must": [
-                        q,
-                        {
-                            "range": {
-                                "timestamp": {
-                                    "gt": t.to_rfc3339()
-                                }
-                            }
-                        }
-                    ]
+        fn gen_query(must_conditions: Vec<Value>) -> Value {
+            json!({
+                "query": {
+                    "bool": {
+                        "must": must_conditions
+                    }
+                }
+            })
+        }
+
+        // "search"
+        let search_query = json!({
+            "simple_query_string": {
+                "query": filter.search.unwrap_or_default(),
+                "fields": ["text"],
+                "default_operator": "and"
+            }
+        });
+
+        match cursor {
+            None => {
+                // the first time query
+                // treat `limit` as `size` and fetch in reverse chronological order
+                let size = filter
+                    .limit
+                    .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
+                    .unwrap_or(MAX_LIMIT) as i64;
+                ElasticsearchQuery {
+                    query: gen_query(vec![search_query]),
+                    size,
+                    sort: vec!["timestamp:desc"],
                 }
             }
-        })
-    } else {
-        json!({ "query": q })
-    };
+            Some(cursor) => {
+                // this is a continuation query (after EOSE)
+                // ignore `limit` of the filter and fetch in chronological order
+                let time_condition = json!({
+                    "range": {
+                        "timestamp": {
+                            "gt": cursor.to_rfc3339()
+                        }
+                    }
+                });
 
-    const MAX_LIMIT: usize = 10_000;
-    let size = limit
-        .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
-        .unwrap_or(MAX_LIMIT) as i64;
-
-    // If `cursor` is specified, we search notes in chronological order.
-    // Otherwise, we search notes in reverse chronological order.
-    let order = if cursor.is_some() {
-        "timestamp:asc"
-    } else {
-        "timestamp:desc"
-    };
-    let sort = vec![order];
-
-    ElasticsearchQuery { query, size, sort }
-}
-
-pub async fn do_search(
-    es_client: &Elasticsearch,
-    index_name: &String,
-    condition: &Condition,
-    cursor: &Option<DateTime<Utc>>,
-    limit: &Option<usize>,
-) -> Result<(Vec<Event>, Option<DateTime<Utc>>), Box<dyn Error + Send + Sync>> {
-    let q = build_query(&condition, limit, &cursor);
-
-    let search_response = es_client
-        .search(SearchParts::Index(&[index_name.as_str()]))
-        .body(q.query)
-        .sort(&q.sort)
-        .size(q.size)
-        .send()
-        .await?;
-
-    if search_response.status_code().is_success() == false {
-        return Err(format!("unexpected status code: {}", search_response.status_code()).into());
+                ElasticsearchQuery {
+                    query: gen_query(vec![search_query, time_condition]),
+                    size: MAX_LIMIT as i64,
+                    sort: vec!["timestamp:asc"],
+                }
+            }
+        }
     }
 
-    let response_body = search_response.json::<Value>().await?;
+    pub async fn execute(
+        &self,
+        es_client: &Elasticsearch,
+        index_name: &String,
+        cursor: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<(Vec<Event>, Option<DateTime<Utc>>)> {
+        let search_response = es_client
+            .search(SearchParts::Index(&[index_name.as_str()]))
+            .body(&self.query)
+            .sort(&self.sort)
+            .size(self.size)
+            .send()
+            .await?;
 
-    let mut notes = vec![];
-    let mut latest_timestamp: Option<DateTime<Utc>> = cursor.clone();
-    for hit in response_body["hits"]["hits"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-    {
-        let doc: Document = serde_json::from_value(hit["_source"].clone())?;
-        match latest_timestamp {
-            Some(t) => {
-                if t < doc.timestamp {
+        if !search_response.status_code().is_success() {
+            return Err(anyhow::anyhow!(
+                "unexpected status code: {}",
+                search_response.status_code()
+            ));
+        }
+
+        let response_body = search_response.json::<Value>().await?;
+
+        let mut notes = vec![];
+        let mut latest_timestamp: Option<DateTime<Utc>> = cursor.clone();
+        for hit in response_body["hits"]["hits"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+        {
+            let doc: Document = serde_json::from_value(hit["_source"].clone())?;
+            match latest_timestamp {
+                Some(t) => {
+                    if t < doc.timestamp {
+                        latest_timestamp = Some(doc.timestamp);
+                    }
+                }
+                None => {
                     latest_timestamp = Some(doc.timestamp);
                 }
             }
-            None => {
-                latest_timestamp = Some(doc.timestamp);
-            }
+            let note: Event = doc.event;
+            notes.push(note);
         }
-        let note: Event = doc.event;
-        notes.push(note);
-    }
-    if cursor.is_none() {
-        notes.reverse();
-    }
 
-    return Ok((notes, latest_timestamp));
+        Ok((notes, latest_timestamp))
+    }
 }
