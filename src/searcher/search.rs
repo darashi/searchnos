@@ -19,13 +19,17 @@ struct Document {
     language: String,
 }
 
-pub async fn do_search(
-    es_client: &Elasticsearch,
-    index_name: &String,
+struct ElasticsearchQuery {
+    query: Value,
+    size: i64,
+    sort: Vec<&'static str>,
+}
+
+fn build_query(
     condition: &Condition,
-    cursor: &Option<DateTime<Utc>>,
     limit: &Option<usize>,
-) -> Result<(Vec<Event>, Option<DateTime<Utc>>), Box<dyn Error + Send + Sync>> {
+    cursor: &Option<DateTime<Utc>>,
+) -> ElasticsearchQuery {
     let phrase = condition.query();
     let q = json!({
         "simple_query_string": {
@@ -34,6 +38,7 @@ pub async fn do_search(
             "default_operator": "and"
         }
     });
+
     let query = if let Some(t) = cursor {
         json!({
             "query": {
@@ -55,6 +60,11 @@ pub async fn do_search(
         json!({ "query": q })
     };
 
+    const MAX_LIMIT: usize = 10_000;
+    let size = limit
+        .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
+        .unwrap_or(MAX_LIMIT) as i64;
+
     // If `cursor` is specified, we search notes in chronological order.
     // Otherwise, we search notes in reverse chronological order.
     let order = if cursor.is_some() {
@@ -62,16 +72,25 @@ pub async fn do_search(
     } else {
         "timestamp:desc"
     };
-    const MAX_LIMIT: usize = 10_000;
-    let size = limit
-        .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
-        .unwrap_or(MAX_LIMIT) as i64;
+    let sort = vec![order];
+
+    ElasticsearchQuery { query, size, sort }
+}
+
+pub async fn do_search(
+    es_client: &Elasticsearch,
+    index_name: &String,
+    condition: &Condition,
+    cursor: &Option<DateTime<Utc>>,
+    limit: &Option<usize>,
+) -> Result<(Vec<Event>, Option<DateTime<Utc>>), Box<dyn Error + Send + Sync>> {
+    let q = build_query(&condition, limit, &cursor);
 
     let search_response = es_client
         .search(SearchParts::Index(&[index_name.as_str()]))
-        .body(query)
-        .sort(&vec![order])
-        .size(size)
+        .body(q.query)
+        .sort(&q.sort)
+        .size(q.size)
         .send()
         .await?;
 
