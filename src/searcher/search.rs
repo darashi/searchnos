@@ -26,23 +26,25 @@ impl ElasticsearchQuery {
     pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
         const MAX_LIMIT: usize = 10_000;
 
-        fn gen_query(must_conditions: Vec<Value>) -> Value {
+        fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
             json!({
                 "query": {
                     "bool": {
-                        "must": must_conditions
+                        // exclude None
+                        "must": must_conditions.into_iter().filter_map(|c| c).collect::<Vec<_>>()
                     }
                 }
             })
         }
 
-        // "search"
-        let search_query = json!({
-            "simple_query_string": {
-                "query": filter.search.unwrap_or_default(),
-                "fields": ["text"],
-                "default_operator": "and"
-            }
+        let search_query = filter.search.and_then(|search| {
+            Some(json!({
+                "simple_query_string": {
+                    "query": search,
+                    "fields": ["text"],
+                    "default_operator": "and"
+                }
+            }))
         });
 
         match cursor {
@@ -62,13 +64,13 @@ impl ElasticsearchQuery {
             Some(cursor) => {
                 // this is a continuation query (after EOSE)
                 // ignore `limit` of the filter and fetch in chronological order
-                let time_condition = json!({
+                let time_condition = Some(json!({
                     "range": {
                         "timestamp": {
                             "gt": cursor.to_rfc3339()
                         }
                     }
-                });
+                }));
 
                 ElasticsearchQuery {
                     query: gen_query(vec![search_query, time_condition]),
