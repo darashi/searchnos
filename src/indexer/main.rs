@@ -44,6 +44,12 @@ async fn put_pipeline(
                     "remove": {
                         "field": "_ml"
                     }
+                },
+                {
+                    "set": {
+                        "field": "timestamp",
+                        "value": "{{{_ingest.timestamp}}}"
+                    }
                 }
             ]
         }))
@@ -132,6 +138,9 @@ async fn create_index_template(
                         },
                         "language": {
                             "type": "keyword"
+                        },
+                        "timestamp": {
+                            "type": "date"
                         }
                     }
                 },
