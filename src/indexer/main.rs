@@ -117,10 +117,18 @@ async fn create_index_template(
                                     "type": "integer"
                                 },
                                 "id": {
-                                    "type": "keyword"
+                                    "type": "text",
+                                    "index_prefixes": {
+                                        "min_chars": 1,
+                                        "max_chars": 19
+                                    }
                                 },
                                 "pubkey": {
-                                    "type": "keyword"
+                                    "type": "text",
+                                    "index_prefixes": {
+                                        "min_chars": 1,
+                                        "max_chars": 19
+                                    }
                                 },
                                 "sig": {
                                     "type": "keyword",
