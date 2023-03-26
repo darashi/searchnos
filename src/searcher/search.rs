@@ -38,7 +38,7 @@ impl ElasticsearchQuery {
             })
         }
 
-        let search_query = filter.search.and_then(|search| {
+        let search_condition = filter.search.and_then(|search| {
             Some(json!({
                 "simple_query_string": {
                     "query": search,
@@ -92,7 +92,11 @@ impl ElasticsearchQuery {
                     .unwrap_or(DEFAULT_LIMIT) as i64;
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![search_query, kinds_condition, created_at_condition]),
+                    query: gen_query(vec![
+                        search_condition,
+                        kinds_condition,
+                        created_at_condition,
+                    ]),
                     size,
                     sort: vec!["event.created_at:desc"], // respect created_at for pre-EOSE search
                 }
@@ -111,7 +115,7 @@ impl ElasticsearchQuery {
                 ElasticsearchQuery {
                     query: gen_query(vec![
                         cursor_condition,
-                        search_query,
+                        search_condition,
                         kinds_condition,
                         created_at_condition,
                     ]),
