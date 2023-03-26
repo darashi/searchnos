@@ -9,7 +9,10 @@ use env_logger;
 use log::{error, info, warn};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
-use std::env;
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
 
 async fn put_pipeline(
     es_client: &Elasticsearch,
@@ -149,6 +152,14 @@ async fn create_index_template(
                         },
                         "timestamp": {
                             "type": "date"
+                        },
+                        "tags": {
+                            "dynamic": true,
+                            "properties": {
+                                "*": {
+                                    "type": "keyword"
+                                }
+                            }
                         }
                     }
                 },
@@ -172,6 +183,7 @@ async fn create_index_template(
 struct Document {
     event: Event,
     text: String,
+    tags: HashMap<String, HashSet<String>>,
 }
 
 const DATE_FORMAT: &str = "%Y.%m.%d";
@@ -205,6 +217,32 @@ fn can_exist(
     Ok(-chrono::Duration::days(allow_future_days as i64) <= diff && diff < ttl_duration)
 }
 
+fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> {
+    let mut tag: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for t in tags {
+        let t = t.as_vec();
+        let mut it = t.iter();
+        let tag_kind = it.next();
+        let first_tag_value = it.next();
+        if let (Some(tag_kind), Some(first_tag_value)) = (tag_kind, first_tag_value) {
+            if tag_kind.len() != 1 {
+                continue; // index only 1-char tags; See NIP-12
+            }
+
+            if let Some(values) = tag.get_mut(tag_kind) {
+                values.insert(first_tag_value.clone());
+            } else {
+                let mut hs = HashSet::new();
+                hs.insert(first_tag_value.clone());
+                tag.insert(tag_kind.to_string(), hs);
+            }
+        }
+    }
+
+    tag
+}
+
 async fn handle_text_note(
     es_client: &Elasticsearch,
     index_prefix: &str,
@@ -221,9 +259,11 @@ async fn handle_text_note(
     }
 
     let id = event.id.to_hex();
+
     let doc = Document {
         event: event.clone(),
         text: event.content.clone(),
+        tags: convert_tags(&event.tags),
     };
     let res = es_client
         .index(IndexParts::IndexId(index_name.as_str(), &id))

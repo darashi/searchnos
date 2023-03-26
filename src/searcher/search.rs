@@ -77,6 +77,26 @@ where
     })
 }
 
+fn gen_tag_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
+where
+    T: fmt::Display,
+{
+    conds.and_then(|conds| {
+        if conds.is_empty() {
+            return None;
+        }
+        let conds: Vec<String> = conds
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        Some(json!({
+            "terms": {
+                field: conds
+            }
+        }))
+    })
+}
+
 impl ElasticsearchQuery {
     pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
         const MAX_LIMIT: usize = 10_000;
@@ -128,6 +148,8 @@ impl ElasticsearchQuery {
 
         let ids_condition = gen_prefix_search_query("event.id", filter.ids);
         let authors_condition = gen_prefix_search_query("event.pubkey", filter.authors);
+        let e_condition: Option<Value> = gen_tag_query("tags.e", filter.events);
+        let p_condition: Option<Value> = gen_tag_query("tags.p", filter.pubkeys);
 
         match cursor {
             None => {
@@ -144,6 +166,8 @@ impl ElasticsearchQuery {
                         authors_condition,
                         kinds_condition,
                         created_at_condition,
+                        e_condition,
+                        p_condition,
                         search_condition,
                     ]),
                     size,
@@ -167,6 +191,8 @@ impl ElasticsearchQuery {
                         authors_condition,
                         kinds_condition,
                         created_at_condition,
+                        e_condition,
+                        p_condition,
                         search_condition,
                         cursor_condition,
                     ]),
