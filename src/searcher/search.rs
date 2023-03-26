@@ -51,7 +51,7 @@ impl ElasticsearchQuery {
         let created_at_condition = match (filter.since, filter.until) {
             (Some(since), Some(until)) => Some(json!({
                 "range": {
-                    "timestamp": {
+                    "event.created_at": {
                         "gt": since.as_u64(),
                         "lt": until.as_u64()
                     }
@@ -59,14 +59,14 @@ impl ElasticsearchQuery {
             })),
             (Some(since), None) => Some(json!({
                 "range": {
-                    "timestamp": {
+                    "event.created_at": {
                         "gt": since.as_u64()
                     }
                 }
             })),
             (None, Some(until)) => Some(json!({
                 "range": {
-                    "timestamp": {
+                    "event.created_at": {
                         "lt": until.as_u64()
                     }
                 }
