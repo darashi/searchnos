@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::{Event, Filter};
@@ -22,21 +24,63 @@ pub struct ElasticsearchQuery {
     sort: Vec<&'static str>,
 }
 
+fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
+    json!({
+        "query": {
+            "bool": {
+                // exclude None
+                "must": must_conditions.into_iter().filter_map(|c| c).collect::<Vec<_>>()
+            }
+        }
+    })
+}
+
+fn gen_prefix_search_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
+where
+    T: fmt::Display,
+{
+    conds.and_then(|ids| {
+        let ids: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        // often requested to be an exact match search with 64 characters,
+        // so it is processed separately from the prefix search.
+        let (ids, id_prefixes): (Vec<_>, Vec<_>) = ids.into_iter().partition(|id| id.len() == 64);
+
+        let ids_cond = if ids.is_empty() {
+            vec![]
+        } else {
+            vec![json!({
+                "terms": {
+                    field: ids
+                }
+            })]
+        };
+
+        let id_prefix_conds = id_prefixes
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "prefix": {
+                        field: id
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let should_conds = [ids_cond, id_prefix_conds].concat();
+
+        Some(json!({
+            "bool": {
+                "should": should_conds,
+                "minimum_should_match": 1
+            }
+        }))
+    })
+}
+
 impl ElasticsearchQuery {
     pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
         const MAX_LIMIT: usize = 10_000;
         const DEFAULT_LIMIT: usize = 500;
-
-        fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
-            json!({
-                "query": {
-                    "bool": {
-                        // exclude None
-                        "must": must_conditions.into_iter().filter_map(|c| c).collect::<Vec<_>>()
-                    }
-                }
-            })
-        }
 
         let search_condition = filter.search.and_then(|search| {
             Some(json!({
@@ -82,6 +126,9 @@ impl ElasticsearchQuery {
             }))
         });
 
+        let ids_condition = gen_prefix_search_query("event.id", filter.ids);
+        let authors_condition = gen_prefix_search_query("event.pubkey", filter.authors);
+
         match cursor {
             None => {
                 // pre-EOSE query
@@ -93,9 +140,11 @@ impl ElasticsearchQuery {
 
                 ElasticsearchQuery {
                     query: gen_query(vec![
-                        search_condition,
+                        ids_condition,
+                        authors_condition,
                         kinds_condition,
                         created_at_condition,
+                        search_condition,
                     ]),
                     size,
                     sort: vec!["event.created_at:desc"], // respect created_at for pre-EOSE search
@@ -114,10 +163,12 @@ impl ElasticsearchQuery {
 
                 ElasticsearchQuery {
                     query: gen_query(vec![
-                        cursor_condition,
-                        search_condition,
+                        ids_condition,
+                        authors_condition,
                         kinds_condition,
                         created_at_condition,
+                        search_condition,
+                        cursor_condition,
                     ]),
                     size: MAX_LIMIT as i64,
                     sort: vec!["timestamp:asc"], // use timestamp because events with past create_at may arrive

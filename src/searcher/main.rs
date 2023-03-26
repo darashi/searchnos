@@ -110,6 +110,9 @@ async fn handle_req(
     stop_subscription(join_handles.clone(), &subscription_id.clone()).await;
 
     // prepare filters and cursors
+    // NOTE As `authors` is defined as `Option<Vec<XOnlyPublicKey>>` in `nostr_sdk::prelude::Filter`,
+    // we cannot use shorter string than 64 charactors for prefix search condition.
+    // We may need to use our own `Filter` type.
     let filters: Vec<Filter> = filters
         .into_iter()
         .map(|f| serde_json::from_value::<Filter>(f).context("parsing filter"))
