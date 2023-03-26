@@ -74,6 +74,14 @@ impl ElasticsearchQuery {
             (None, None) => None,
         };
 
+        let kinds_condition = filter.kinds.and_then(|kinds| {
+            Some(json!({
+                "terms": {
+                    "event.kind": kinds
+                }
+            }))
+        });
+
         match cursor {
             None => {
                 // pre-EOSE query
@@ -84,7 +92,7 @@ impl ElasticsearchQuery {
                     .unwrap_or(DEFAULT_LIMIT) as i64;
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![search_query, created_at_condition]),
+                    query: gen_query(vec![search_query, kinds_condition, created_at_condition]),
                     size,
                     sort: vec!["event.created_at:desc"], // respect created_at for pre-EOSE search
                 }
@@ -101,7 +109,12 @@ impl ElasticsearchQuery {
                 }));
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![cursor_condition, search_query, created_at_condition]),
+                    query: gen_query(vec![
+                        cursor_condition,
+                        search_query,
+                        kinds_condition,
+                        created_at_condition,
+                    ]),
                     size: MAX_LIMIT as i64,
                     sort: vec!["timestamp:asc"], // use timestamp because events with past create_at may arrive
                 }
