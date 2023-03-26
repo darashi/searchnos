@@ -25,6 +25,7 @@ pub struct ElasticsearchQuery {
 impl ElasticsearchQuery {
     pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
         const MAX_LIMIT: usize = 10_000;
+        const DEFAULT_LIMIT: usize = 500;
 
         fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
             json!({
@@ -80,7 +81,7 @@ impl ElasticsearchQuery {
                 let size = filter
                     .limit
                     .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
-                    .unwrap_or(MAX_LIMIT) as i64;
+                    .unwrap_or(DEFAULT_LIMIT) as i64;
 
                 ElasticsearchQuery {
                     query: gen_query(vec![search_query, created_at_condition]),
