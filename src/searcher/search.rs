@@ -47,24 +47,51 @@ impl ElasticsearchQuery {
             }))
         });
 
+        let created_at_condition = match (filter.since, filter.until) {
+            (Some(since), Some(until)) => Some(json!({
+                "range": {
+                    "timestamp": {
+                        "gt": since.as_u64(),
+                        "lt": until.as_u64()
+                    }
+                }
+            })),
+            (Some(since), None) => Some(json!({
+                "range": {
+                    "timestamp": {
+                        "gt": since.as_u64()
+                    }
+                }
+            })),
+            (None, Some(until)) => Some(json!({
+                "range": {
+                    "timestamp": {
+                        "lt": until.as_u64()
+                    }
+                }
+            })),
+            (None, None) => None,
+        };
+
         match cursor {
             None => {
-                // the first time query
+                // pre-EOSE query
                 // treat `limit` as `size` and fetch in reverse chronological order
                 let size = filter
                     .limit
                     .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
                     .unwrap_or(MAX_LIMIT) as i64;
+
                 ElasticsearchQuery {
-                    query: gen_query(vec![search_query]),
+                    query: gen_query(vec![search_query, created_at_condition]),
                     size,
-                    sort: vec!["timestamp:desc"],
+                    sort: vec!["event.created_at:desc"], // respect created_at for pre-EOSE search
                 }
             }
             Some(cursor) => {
-                // this is a continuation query (after EOSE)
+                // post-EOSE query
                 // ignore `limit` of the filter and fetch in chronological order
-                let time_condition = Some(json!({
+                let cursor_condition = Some(json!({
                     "range": {
                         "timestamp": {
                             "gt": cursor.to_rfc3339()
@@ -73,9 +100,9 @@ impl ElasticsearchQuery {
                 }));
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![search_query, time_condition]),
+                    query: gen_query(vec![cursor_condition, search_query, created_at_condition]),
                     size: MAX_LIMIT as i64,
-                    sort: vec!["timestamp:asc"],
+                    sort: vec!["timestamp:asc"], // use timestamp because events with past create_at may arrive
                 }
             }
         }
