@@ -1,8 +1,9 @@
 use std::fmt;
 
+use crate::filter::Filter;
 use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
-use nostr_sdk::prelude::{Event, Filter};
+use nostr_sdk::prelude::Event;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -102,6 +103,8 @@ impl ElasticsearchQuery {
         const MAX_LIMIT: usize = 10_000;
         const DEFAULT_LIMIT: usize = 500;
 
+        let tags = &filter.tags();
+
         let search_condition = filter.search.and_then(|search| {
             Some(json!({
                 "simple_query_string": {
@@ -148,8 +151,19 @@ impl ElasticsearchQuery {
 
         let ids_condition = gen_prefix_search_query("event.id", filter.ids);
         let authors_condition = gen_prefix_search_query("event.pubkey", filter.authors);
-        let e_condition: Option<Value> = gen_tag_query("tags.e", filter.events);
-        let p_condition: Option<Value> = gen_tag_query("tags.p", filter.pubkeys);
+
+        let mut must_conditinos = vec![
+            ids_condition,
+            authors_condition,
+            kinds_condition,
+            created_at_condition,
+            search_condition,
+        ];
+
+        for (tag_name, values) in tags {
+            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), Some(values.clone()));
+            must_conditinos.push(tag_condition);
+        }
 
         match cursor {
             None => {
@@ -161,15 +175,7 @@ impl ElasticsearchQuery {
                     .unwrap_or(DEFAULT_LIMIT) as i64;
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![
-                        ids_condition,
-                        authors_condition,
-                        kinds_condition,
-                        created_at_condition,
-                        e_condition,
-                        p_condition,
-                        search_condition,
-                    ]),
+                    query: gen_query(must_conditinos),
                     size,
                     sort: vec!["event.created_at:desc"], // respect created_at for pre-EOSE search
                 }
@@ -184,18 +190,10 @@ impl ElasticsearchQuery {
                         }
                     }
                 }));
+                must_conditinos.push(cursor_condition);
 
                 ElasticsearchQuery {
-                    query: gen_query(vec![
-                        ids_condition,
-                        authors_condition,
-                        kinds_condition,
-                        created_at_condition,
-                        e_condition,
-                        p_condition,
-                        search_condition,
-                        cursor_condition,
-                    ]),
+                    query: gen_query(must_conditinos),
                     size: MAX_LIMIT as i64,
                     sort: vec!["timestamp:asc"], // use timestamp because events with past create_at may arrive
                 }

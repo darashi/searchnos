@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate serde_json;
 
+mod filter;
 mod search;
 
 use anyhow::Context;
@@ -22,8 +23,9 @@ use elasticsearch::{
     Elasticsearch,
 };
 use env_logger;
+use filter::Filter;
 use futures::{sink::SinkExt, stream::StreamExt};
-use nostr_sdk::prelude::{Filter, RelayMessage, SubscriptionId};
+use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use search::ElasticsearchQuery;
 use std::collections::HashMap;
 use std::{env, net::SocketAddr, sync::Arc};
