@@ -290,8 +290,6 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
                         }
                         None => {
                             log::info!("{} websocket connection closed", addr);
-                            // unsubscribe all subscriptions
-                            // state.engine.leave(addr);
 
                             // abort all ongoing tasks
                             for join_handle in join_handles.lock().await.values() {
