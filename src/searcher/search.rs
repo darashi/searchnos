@@ -107,10 +107,8 @@ impl ElasticsearchQuery {
 
         let search_condition = filter.search.and_then(|search| {
             Some(json!({
-                "simple_query_string": {
-                    "query": search,
-                    "fields": ["text"],
-                    "default_operator": "and"
+                "match_phrase": {
+                    "text": search,
                 }
             }))
         });
