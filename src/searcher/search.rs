@@ -105,14 +105,6 @@ impl ElasticsearchQuery {
 
         let tags = &filter.tags();
 
-        let search_condition = filter.search.and_then(|search| {
-            Some(json!({
-                "match_phrase": {
-                    "text": search,
-                }
-            }))
-        });
-
         let created_at_condition = match (filter.since, filter.until) {
             (Some(since), Some(until)) => Some(json!({
                 "range": {
@@ -155,8 +147,18 @@ impl ElasticsearchQuery {
             authors_condition,
             kinds_condition,
             created_at_condition,
-            search_condition,
         ];
+
+        if let Some(search) = filter.search {
+            let terms = search.trim().split_ascii_whitespace();
+            for term in terms {
+                must_conditinos.push(Some(json!({
+                    "match_phrase": {
+                        "text": term,
+                    }
+                })));
+            }
+        }
 
         for (tag_name, values) in tags {
             let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), Some(values.clone()));
