@@ -6,7 +6,9 @@ mod search;
 
 use anyhow::Context;
 use axum::extract::connect_info::ConnectInfo;
-use axum::Extension;
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum::{async_trait, Extension};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::StatusCode,
@@ -25,18 +27,18 @@ use elasticsearch::{
 use env_logger;
 use filter::Filter;
 use futures::{sink::SinkExt, stream::StreamExt};
-use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
+use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage, SubscriptionId};
 use search::ElasticsearchQuery;
 use std::collections::HashMap;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tower_http::add_extension::AddExtensionLayer;
 
 #[derive(Debug)]
 struct AppState {
     es_client: Elasticsearch,
     index_name: String,
+    relay_info: String,
 }
 
 async fn send_events(
@@ -308,10 +310,57 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
 }
 
 async fn ping() -> impl IntoResponse {
+    println!("PING");
+
     StatusCode::OK
 }
 
+struct ReturnRelayInfoExtractor {}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for ReturnRelayInfoExtractor
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(_upgrade) = parts.headers.get("upgrade") {
+            Ok(ReturnRelayInfoExtractor {})
+        } else {
+            if let Some(accept) = parts.headers.get("accept") {
+                if accept == "application/nostr+json" {
+                    use axum::RequestPartsExt;
+                    let Extension(state) = parts
+                        .extract::<Extension<Arc<AppState>>>()
+                        .await
+                        .map_err(|err| err.into_response())?;
+                    let relay_info = state.relay_info.clone();
+
+                    let res = axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(relay_info)
+                        .unwrap()
+                        .into_response();
+
+                    return Err(res);
+                }
+            }
+            let res = axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/text")
+                .body("Please use a Nostr client to connect.".to_string())
+                .unwrap()
+                .into_response();
+
+            return Err(res);
+        }
+    }
+}
+
 async fn websocket_handler(
+    _: ReturnRelayInfoExtractor,
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -341,7 +390,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index_name = "nostr".to_string();
     log::info!("elasticsearch index ready");
 
+    let mut relay_info = RelayInformationDocument::new();
+    relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
+    relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
+    relay_info.supported_nips = Some(vec![1, 9, 11, 12, 15, 22]);
+    relay_info.software = Some(env!("CARGO_PKG_NAME").to_string());
+    relay_info.version = Some(env!("CARGO_PKG_VERSION").to_string());
+    let relay_info = serde_json::to_string(&relay_info).unwrap();
+
     let app_state = Arc::new(AppState {
+        relay_info,
         es_client,
         index_name,
     });
@@ -349,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/ping", get(ping))
         .route("/", get(websocket_handler))
-        .layer(AddExtensionLayer::new(app_state));
+        .layer(Extension(app_state));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     log::info!("listening on {}", addr);
