@@ -160,6 +160,9 @@ async fn create_index_template(
                                     "type": "keyword"
                                 }
                             }
+                        },
+                        "identifier_tag": {
+                            "type": "keyword"
                         }
                     }
                 },
@@ -184,6 +187,7 @@ struct Document {
     event: Event,
     text: String,
     tags: HashMap<String, HashSet<String>>,
+    identifier_tag: String,
 }
 
 const DATE_FORMAT: &str = "%Y.%m.%d";
@@ -244,6 +248,7 @@ fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> 
 }
 
 fn extract_text(event: &Event) -> String {
+    // TODO for LongFormTextNote, index tags "title" and "summary" if available
     match event.kind {
         Kind::TextNote | Kind::LongFormTextNote => event.content.clone(),
         _ => {
@@ -263,6 +268,138 @@ fn is_replaceable_event(event: &Event) -> bool {
     }
 }
 
+fn is_ephemeral_event(event: &Event) -> bool {
+    match event.kind {
+        Kind::Ephemeral(_) => true,
+        _ => false,
+    }
+}
+
+fn is_parameterized_replaceable_event(event: &Event) -> bool {
+    match event.kind {
+        Kind::ParameterizedReplaceable(_) => true,
+        _ => false,
+    }
+}
+
+async fn delete_replaceable_event(
+    es_client: &Elasticsearch,
+    alias_name: &str,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let res = es_client
+        .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
+        .body(json!({
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "event.pubkey": event.pubkey.to_string()
+                            }
+                        },
+                        {
+                            "term": {
+                                "event.kind": event.kind
+                            }
+                        },
+                        {
+                            "range": {
+                                "event.created_at": {
+                                    "lt": event.created_at.to_string()
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }))
+        .send()
+        .await?;
+    if !res.status_code().is_success() {
+        let status_code = res.status_code();
+        let body = res.text().await?;
+        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+    }
+    let response_body = res.json::<serde_json::Value>().await?;
+    info!(
+        "replaceable event (kind {}): deleted {} event(s) of for pubkey {}",
+        event.kind.as_u32(),
+        response_body["deleted"],
+        event.pubkey,
+    );
+    Ok(())
+}
+
+fn extract_identifier_tag(tags: &Vec<Tag>) -> String {
+    tags.iter()
+        .find_map(|tag| {
+            if let Tag::Identifier(tag) = tag {
+                Some(tag.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+async fn delete_parameterized_replaceable_event(
+    es_client: &Elasticsearch,
+    alias_name: &str,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let identifier_tag = extract_identifier_tag(&event.tags);
+    let res = es_client
+        .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
+        .body(json!({
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "event.pubkey": event.pubkey.to_string()
+                            }
+                        },
+                        {
+                            "term": {
+                                "event.kind": event.kind
+                            }
+                        },
+                        {
+                            "range": {
+                                "event.created_at": {
+                                    "lt": event.created_at.to_string()
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "identifier_tag": identifier_tag
+                            }
+                        }
+                    ]
+                }
+            }
+        }))
+        .send()
+        .await?;
+
+    if !res.status_code().is_success() {
+        let status_code = res.status_code();
+        let body = res.text().await?;
+        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+    }
+    let response_body = res.json::<serde_json::Value>().await?;
+    info!(
+        "parameterized replaceable event (kind {}): deleted {} event(s) of for pubkey {}, identifier_tag {}",
+        event.kind.as_u32(),
+        response_body["deleted"],
+        event.pubkey,
+        identifier_tag,
+    );
+    Ok(())
+}
+
 async fn handle_update(
     es_client: &Elasticsearch,
     index_prefix: &str,
@@ -271,6 +408,10 @@ async fn handle_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let index_name = index_name_for_event(index_prefix, event)?;
     info!("{} {}", index_name, event.as_json());
+
+    if is_ephemeral_event(event) {
+        return Ok(());
+    }
 
     // TODO parameterize ttl
     let ok = can_exist(&index_name, &Utc::now(), 7, 1).unwrap_or(false);
@@ -285,6 +426,7 @@ async fn handle_update(
         event: event.clone(),
         text: extract_text(&event),
         tags: convert_tags(&event.tags),
+        identifier_tag: extract_identifier_tag(&event.tags),
     };
     let res = es_client
         .index(IndexParts::IndexId(index_name.as_str(), &id))
@@ -298,47 +440,10 @@ async fn handle_update(
     }
 
     if is_replaceable_event(event) {
-        let res = es_client
-            .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
-            .body(json!({
-                "query": {
-                    "bool": {
-                        "must": [
-                            {
-                                "term": {
-                                    "event.pubkey": event.pubkey.to_string()
-                                }
-                            },
-                            {
-                                "term": {
-                                    "event.kind": event.kind
-                                }
-                            },
-                            {
-                                "range": {
-                                    "event.created_at": {
-                                        "lt": event.created_at.to_string()
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            }))
-            .send()
-            .await?;
-        if !res.status_code().is_success() {
-            let status_code = res.status_code();
-            let body = res.text().await?;
-            return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
-        }
-        let response_body = res.json::<serde_json::Value>().await?;
-        info!(
-            "replaceable event (kind {}): deleted {} event(s) of for pubkey {}",
-            event.kind.as_u32(),
-            response_body["deleted"],
-            event.pubkey,
-        );
+        delete_replaceable_event(es_client, alias_name, event).await?;
+    }
+    if is_parameterized_replaceable_event(event) {
+        delete_parameterized_replaceable_event(es_client, alias_name, event).await?;
     }
 
     Ok(())
@@ -471,10 +576,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     nostr_client.connect().await;
     info!("connected to relays");
 
-    let subscription =
-        Filter::new()
-            .limit(0)
-            .kinds(vec![Kind::Metadata, Kind::TextNote, Kind::EventDeletion]);
+    let subscription = Filter::new().limit(0).kinds(vec![
+        Kind::Metadata,
+        Kind::TextNote,
+        Kind::EventDeletion,
+        Kind::LongFormTextNote,
+    ]);
 
     nostr_client.subscribe(vec![subscription]).await;
     info!("ready to receive messages");
@@ -506,7 +613,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use std::str::FromStr;
 
-    use crate::can_exist;
+    use nostr_sdk::Tag;
+
+    use crate::{can_exist, extract_identifier_tag};
 
     #[test]
     fn test_can_exist() {
@@ -530,6 +639,32 @@ mod tests {
         assert_eq!(
             can_exist("nostr-2023.03.18", &current_time, 2, 1).unwrap(),
             false
+        );
+    }
+
+    #[test]
+    fn test_identifier_tag() {
+        assert_eq!(
+            extract_identifier_tag(&vec![Tag::Identifier("hello".to_string())]),
+            "hello".to_string()
+        );
+
+        assert_eq!(
+            extract_identifier_tag(&vec![
+                Tag::Identifier("foo".to_string()),
+                Tag::Identifier("bar".to_string())
+            ]),
+            "foo".to_string()
+        );
+
+        assert_eq!(extract_identifier_tag(&vec![]), "".to_string());
+        assert_eq!(
+            extract_identifier_tag(&vec![Tag::Identifier("".to_string())]),
+            "".to_string()
+        );
+        assert_eq!(
+            extract_identifier_tag(&vec![Tag::Hashtag("hello".to_string())]),
+            "".to_string()
         );
     }
 }
