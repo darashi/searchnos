@@ -3,7 +3,7 @@ use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     indices::IndicesPutIndexTemplateParts,
     ingest::IngestPutPipelineParts,
-    DeleteParts, Elasticsearch, IndexParts, SearchParts,
+    DeleteByQueryParts, DeleteParts, Elasticsearch, IndexParts, SearchParts,
 };
 use env_logger;
 use log::{error, info, warn};
@@ -243,9 +243,30 @@ fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> 
     tag
 }
 
-async fn handle_text_note(
+fn extract_text(event: &Event) -> String {
+    match event.kind {
+        Kind::TextNote | Kind::LongFormTextNote => event.content.clone(),
+        _ => {
+            let content: HashMap<String, String> =
+                serde_json::from_str(&event.content).unwrap_or_default();
+            let texts: Vec<String> = content.values().map(|s| s.to_string()).collect();
+            texts.join(" ")
+        }
+    }
+}
+
+fn is_replaceable_event(event: &Event) -> bool {
+    match event.kind {
+        Kind::Replaceable(_) => true,
+        Kind::Metadata | Kind::ContactList | Kind::ChannelMetadata => true,
+        _ => false,
+    }
+}
+
+async fn handle_update(
     es_client: &Elasticsearch,
     index_prefix: &str,
+    alias_name: &str,
     event: &Event,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let index_name = index_name_for_event(index_prefix, event)?;
@@ -262,7 +283,7 @@ async fn handle_text_note(
 
     let doc = Document {
         event: event.clone(),
-        text: event.content.clone(),
+        text: extract_text(&event),
         tags: convert_tags(&event.tags),
     };
     let res = es_client
@@ -275,6 +296,51 @@ async fn handle_text_note(
         let body = res.text().await?;
         error!("failed to index; received {}, {}", status_code, body);
     }
+
+    if is_replaceable_event(event) {
+        let res = es_client
+            .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
+            .body(json!({
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "term": {
+                                    "event.pubkey": event.pubkey.to_string()
+                                }
+                            },
+                            {
+                                "term": {
+                                    "event.kind": event.kind
+                                }
+                            },
+                            {
+                                "range": {
+                                    "event.created_at": {
+                                        "lt": event.created_at.to_string()
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }))
+            .send()
+            .await?;
+        if !res.status_code().is_success() {
+            let status_code = res.status_code();
+            let body = res.text().await?;
+            return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+        }
+        let response_body = res.json::<serde_json::Value>().await?;
+        info!(
+            "replaceable event (kind {}): deleted {} event(s) of for pubkey {}",
+            event.kind.as_u32(),
+            response_body["deleted"],
+            event.pubkey,
+        );
+    }
+
     Ok(())
 }
 
@@ -389,6 +455,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     put_pipeline(&es_client, pipeline_name).await?;
 
     let index_template_name = "nostr";
+    let alias_name = "nostr";
+
     create_index_template(&es_client, index_template_name, pipeline_name).await?;
     info!("elasticsearch index ready");
 
@@ -403,9 +471,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     nostr_client.connect().await;
     info!("connected to relays");
 
-    let subscription = Filter::new()
-        .limit(0)
-        .kinds(vec![Kind::TextNote, Kind::EventDeletion]);
+    let subscription =
+        Filter::new()
+            .limit(0)
+            .kinds(vec![Kind::Metadata, Kind::TextNote, Kind::EventDeletion]);
+
     nostr_client.subscribe(vec![subscription]).await;
     info!("ready to receive messages");
 
@@ -416,8 +486,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(notification) = notifications.recv().await {
             if let RelayPoolNotification::Event(_url, event) = notification {
                 match event.kind {
-                    Kind::TextNote => {
-                        handle_text_note(&es_client, &index_template_name, &event).await?;
+                    Kind::Metadata | Kind::TextNote => {
+                        handle_update(&es_client, &alias_name, &index_template_name, &event)
+                            .await?;
                     }
                     Kind::EventDeletion => {
                         handle_deletion_event(&es_client, &index_template_name, &event).await?;
