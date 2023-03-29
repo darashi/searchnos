@@ -3,7 +3,7 @@ use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     indices::IndicesPutIndexTemplateParts,
     ingest::IngestPutPipelineParts,
-    DeleteByQueryParts, DeleteParts, Elasticsearch, IndexParts, SearchParts,
+    DeleteByQueryParts, Elasticsearch, IndexParts,
 };
 use env_logger;
 use log::{error, info, warn};
@@ -319,7 +319,7 @@ async fn delete_replaceable_event(
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+        return Err(format!("failed to delete; received {}, {}", status_code, body).into());
     }
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
@@ -387,7 +387,7 @@ async fn delete_parameterized_replaceable_event(
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
+        return Err(format!("failed to delete; received {}, {}", status_code, body).into());
     }
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
@@ -452,65 +452,43 @@ async fn handle_update(
     Ok(())
 }
 
-async fn delete_event(
+async fn handle_deletion_event(
     es_client: &Elasticsearch,
-    alias_name: &str,
-    id: &str,
-    pubkey: &XOnlyPublicKey,
+    index_name: &str,
+    event: &Event,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("try to delete: id={}", id);
+    let deletion_event = event;
+    log::info!("deletion event: {}", deletion_event.as_json());
+    let ids_to_delete = deletion_event
+        .tags
+        .iter()
+        .filter_map(|tag| match tag {
+            Tag::Event(e, _, _) => Some(e.to_hex()),
+            _ => None,
+        })
+        .collect::<Vec<String>>();
+    log::info!("ids to delete: {:?}", ids_to_delete);
 
     let res = es_client
-        .search(SearchParts::Index(&[alias_name]))
+        .delete_by_query(DeleteByQueryParts::Index(&[index_name]))
         .body(json!({
             "query": {
-                "term": {
-                    "_id": id
+                "bool": {
+                    "must": [
+                        {
+                            "terms": {
+                                "_id": ids_to_delete
+                            },
+                        },
+                        {
+                            "term": {
+                                "event.pubkey": deletion_event.pubkey.to_string()
+                            },
+                        }
+                    ]
                 }
             }
         }))
-        .size(1)
-        .send()
-        .await?;
-
-    if !res.status_code().is_success() {
-        let status_code = res.status_code();
-        let body = res.text().await?;
-        return Err(format!("failed to fetch; received {}, {}", status_code, body).into());
-    }
-    let response_body = res.json::<serde_json::Value>().await?;
-    let hits_array = match response_body["hits"]["hits"].as_array() {
-        Some(hits) => hits,
-        None => return Err("Failed to retrieve hits from response".into()),
-    };
-    let hit = match hits_array.first() {
-        Some(hit) => hit,
-        None => return Err(format!("Event with ID {} not found in search results", id).into()),
-    };
-
-    let event_to_be_deleted = serde_json::from_value::<Event>(hit["_source"]["event"].clone())?;
-
-    let ok_to_delete = *pubkey == event_to_be_deleted.pubkey;
-    info!(
-        "can event {} be deleted? {}",
-        event_to_be_deleted.id, ok_to_delete
-    );
-    if !ok_to_delete {
-        return Err(format!(
-            "pubkey mismatch: pub key was {}, but that of the event {} was {}",
-            pubkey, id, event_to_be_deleted.pubkey
-        )
-        .into());
-    }
-
-    let index_name = hit["_index"].as_str();
-    let index_name = match index_name {
-        Some(index_name) => index_name,
-        None => return Err("failed to get index name".into()),
-    };
-
-    let res = es_client
-        .delete(DeleteParts::IndexId(&index_name, &id))
         .send()
         .await?;
 
@@ -520,27 +498,13 @@ async fn delete_event(
         error!("failed to delete; received {}, {}", status_code, body);
         return Err("failed to delete".into());
     }
-    info!("deleted: id={}", id);
-    Ok(())
-}
 
-async fn handle_deletion_event(
-    es_client: &Elasticsearch,
-    index_name: &str,
-    event: &Event,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let deletion_event = event;
-    println!("deletion event: {}", deletion_event.as_json());
-    for tag in &deletion_event.tags {
-        if let Tag::Event(e, _, _) = tag {
-            let id = e.to_hex();
-            let result = delete_event(es_client, index_name, &id, &deletion_event.pubkey).await;
-            if result.is_err() {
-                error!("failed to delete event; {}", result.err().unwrap());
-                continue;
-            }
-        }
-    }
+    let response_body = res.json::<serde_json::Value>().await?;
+    info!(
+        "delete event: deleted {} event(s) of for pubkey {}",
+        response_body["deleted"], event.pubkey,
+    );
+
     Ok(())
 }
 
