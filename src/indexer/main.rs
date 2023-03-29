@@ -250,13 +250,13 @@ fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> 
 fn extract_text(event: &Event) -> String {
     // TODO for LongFormTextNote, index tags "title" and "summary" if available
     match event.kind {
-        Kind::TextNote | Kind::LongFormTextNote => event.content.clone(),
-        _ => {
+        Kind::Metadata => {
             let content: HashMap<String, String> =
                 serde_json::from_str(&event.content).unwrap_or_default();
             let texts: Vec<String> = content.values().map(|s| s.to_string()).collect();
             texts.join(" ")
         }
+        _ => event.content.clone(),
     }
 }
 
@@ -445,6 +445,9 @@ async fn handle_update(
     if is_parameterized_replaceable_event(event) {
         delete_parameterized_replaceable_event(es_client, alias_name, event).await?;
     }
+    if let Kind::EventDeletion = event.kind {
+        handle_deletion_event(es_client, alias_name, event).await?;
+    }
 
     Ok(())
 }
@@ -592,18 +595,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut notifications = nostr_client.notifications();
         while let Ok(notification) = notifications.recv().await {
             if let RelayPoolNotification::Event(_url, event) = notification {
-                match event.kind {
-                    Kind::Metadata | Kind::TextNote => {
-                        handle_update(&es_client, &alias_name, &index_template_name, &event)
-                            .await?;
-                    }
-                    Kind::EventDeletion => {
-                        handle_deletion_event(&es_client, &index_template_name, &event).await?;
-                    }
-                    _ => {
-                        continue;
-                    }
-                }
+                handle_update(&es_client, &alias_name, &index_template_name, &event).await?;
             }
         }
     }
