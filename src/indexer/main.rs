@@ -548,6 +548,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Kind::TextNote,
         Kind::EventDeletion,
         Kind::LongFormTextNote,
+        Kind::ChannelCreation,
+        Kind::ChannelMetadata,
+        Kind::ChannelMessage,
+        Kind::ChannelHideMessage,
+        Kind::ChannelMuteUser,
     ]);
 
     nostr_client.subscribe(vec![subscription]).await;
