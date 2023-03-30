@@ -76,6 +76,7 @@ async fn send_eose(
 }
 
 async fn query_then_send(
+    addr: SocketAddr,
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     subscription_id: SubscriptionId,
@@ -85,7 +86,14 @@ async fn query_then_send(
     let (events, new_cursor) = query
         .execute(&state.es_client, &state.index_name, cursor)
         .await?;
+    let num_hits = events.len();
     send_events(sender.clone(), &subscription_id, events).await?;
+    log::info!(
+        "{} [{}] sent {}",
+        addr,
+        subscription_id.to_string(),
+        num_hits
+    );
     Ok(new_cursor)
 }
 
@@ -134,6 +142,7 @@ async fn handle_req(
         let query = ElasticsearchQuery::from_filter(filter.clone(), None);
 
         let new_cursor = query_then_send(
+            addr,
             state.clone(),
             sender.clone(),
             subscription_id.clone(),
@@ -150,14 +159,20 @@ async fn handle_req(
         loop {
             let wait = 5.0 + (rand::random::<f64>() * 5.0); // TODO better scheduling
             tokio::time::sleep(tokio::time::Duration::from_secs_f64(wait)).await;
-            log::info!("{} cont. {:?} {:?}", addr, &sid_.to_string(), filters);
+            log::info!("{} [{}] {:?}", addr, &sid_.to_string(), filters);
 
             for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
                 let query = ElasticsearchQuery::from_filter(filter.clone(), *cursor);
 
-                let res =
-                    query_then_send(state.clone(), sender.clone(), sid_.clone(), query, *cursor)
-                        .await;
+                let res = query_then_send(
+                    addr,
+                    state.clone(),
+                    sender.clone(),
+                    sid_.clone(),
+                    query,
+                    *cursor,
+                )
+                .await;
                 match res {
                     Ok(new_cursor) => {
                         *cursor = new_cursor;
