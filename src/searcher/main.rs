@@ -39,6 +39,7 @@ struct AppState {
     es_client: Elasticsearch,
     index_name: String,
     relay_info: String,
+    max_subscriptions_per_connection: usize,
 }
 
 async fn send_events(
@@ -109,6 +110,14 @@ async fn handle_req(
         subscription_id.to_string(),
         filters
     );
+
+    let num_ongoing_subscriptions = join_handles.lock().await.len();
+    if num_ongoing_subscriptions + 1 > state.max_subscriptions_per_connection {
+        return Err(anyhow::anyhow!(
+            "too many ongoing subscriptions: {}",
+            num_ongoing_subscriptions
+        ));
+    }
 
     // expire old subscription if exists
     stop_subscription(join_handles.clone(), &subscription_id.clone()).await;
@@ -399,6 +408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         relay_info,
         es_client,
         index_name,
+        max_subscriptions_per_connection: 32, // TODO make this configurable and include in relay info
     });
 
     let app = Router::new()
