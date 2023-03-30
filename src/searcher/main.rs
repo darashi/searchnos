@@ -83,16 +83,20 @@ async fn query_then_send(
     query: search::ElasticsearchQuery,
     cursor: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let t0 = std::time::Instant::now();
     let (events, new_cursor) = query
         .execute(&state.es_client, &state.index_name, cursor)
         .await?;
+    let search_time = t0.elapsed().as_millis();
     let num_hits = events.len();
     send_events(sender.clone(), &subscription_id, events).await?;
+
     log::info!(
-        "{} [{}] sent {}",
+        "{} [{}] sent {} event(s), searched in {} ms",
         addr,
         subscription_id.to_string(),
-        num_hits
+        num_hits,
+        search_time,
     );
     Ok(new_cursor)
 }
@@ -113,7 +117,7 @@ async fn handle_req(
     let filters = msg[2..].to_vec();
 
     log::info!(
-        "{} REQ {:?} {:?}",
+        "{} [{}] req {:?}",
         addr,
         subscription_id.to_string(),
         filters
@@ -159,7 +163,7 @@ async fn handle_req(
         loop {
             let wait = 5.0 + (rand::random::<f64>() * 5.0); // TODO better scheduling
             tokio::time::sleep(tokio::time::Duration::from_secs_f64(wait)).await;
-            log::info!("{} [{}] {:?}", addr, &sid_.to_string(), filters);
+            log::info!("{} [{}] cont. {:?}", addr, &sid_.to_string(), filters);
 
             for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
                 let query = ElasticsearchQuery::from_filter(filter.clone(), *cursor);
