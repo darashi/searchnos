@@ -150,11 +150,7 @@ async fn handle_req(
         loop {
             let wait = 5.0 + (rand::random::<f64>() * 5.0); // TODO better scheduling
             tokio::time::sleep(tokio::time::Duration::from_secs_f64(wait)).await;
-            log::info!(
-                "{} continuing search for subscription {:?}",
-                addr,
-                &sid_.to_string()
-            );
+            log::info!("{} cont. {:?} {:?}", addr, &sid_.to_string(), filters);
 
             for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
                 let query = ElasticsearchQuery::from_filter(filter.clone(), *cursor);
