@@ -139,6 +139,15 @@ async fn handle_req(
         .into_iter()
         .map(|f| serde_json::from_value::<Filter>(f).context("parsing filter"))
         .collect::<Result<_, _>>()?;
+
+    // respond only to filters with search
+    if filters
+        .iter()
+        .any(|f| f.search.as_ref().unwrap_or(&"".to_string()).is_empty())
+    {
+        return Err(anyhow::anyhow!("only filter with search is supported"));
+    }
+
     let mut cursors: Vec<Option<DateTime<Utc>>> = filters.iter().map(|_| None).collect();
 
     // do the first search
