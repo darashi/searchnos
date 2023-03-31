@@ -213,7 +213,15 @@ impl ElasticsearchQuery {
             .sort(&self.sort)
             .size(self.size)
             .send()
-            .await?;
+            .await;
+
+        let search_response = match search_response {
+            Err(err) => {
+                log::error!("failed to execute search query {:?}: {}", self, err);
+                return Err(anyhow::anyhow!("failed to execute search query"));
+            }
+            Ok(search_response) => search_response,
+        };
 
         if !search_response.status_code().is_success() {
             return Err(anyhow::anyhow!(
