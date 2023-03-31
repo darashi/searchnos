@@ -405,7 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parse::<usize>()
             .expect("MAX_SUBSCRIPTIONS is not a valid number")
     } else {
-        32
+        8
     };
 
     log::info!("connecting to elasticsearch");
