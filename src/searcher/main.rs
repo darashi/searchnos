@@ -39,7 +39,7 @@ struct AppState {
     es_client: Elasticsearch,
     index_name: String,
     relay_info: String,
-    max_subscriptions_per_connection: usize,
+    max_subscriptions: usize,
 }
 
 async fn send_events(
@@ -124,7 +124,7 @@ async fn handle_req(
     );
 
     let num_ongoing_subscriptions = join_handles.lock().await.len();
-    if num_ongoing_subscriptions + 1 > state.max_subscriptions_per_connection {
+    if num_ongoing_subscriptions + 1 > state.max_subscriptions {
         return Err(anyhow::anyhow!(
             "too many ongoing subscriptions: {}",
             num_ongoing_subscriptions
@@ -400,6 +400,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = port
         .parse::<u16>()
         .expect("PORT is not a valid port number");
+    let max_subscriptions = if let Ok(max_subscriptions) = env::var("MAX_SUBSCRIPTIONS") {
+        max_subscriptions
+            .parse::<usize>()
+            .expect("MAX_SUBSCRIPTIONS is not a valid number")
+    } else {
+        32
+    };
 
     log::info!("connecting to elasticsearch");
 
@@ -423,7 +430,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         relay_info,
         es_client,
         index_name,
-        max_subscriptions_per_connection: 32, // TODO make this configurable and include in relay info
+        max_subscriptions, // TODO include this in relay info
     });
 
     let app = Router::new()
