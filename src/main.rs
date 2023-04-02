@@ -1,9 +1,3 @@
-#[macro_use]
-extern crate serde_json;
-
-mod filter;
-mod search;
-
 use anyhow::Context;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::FromRequestParts;
@@ -25,10 +19,10 @@ use elasticsearch::{
     Elasticsearch,
 };
 use env_logger;
-use filter::Filter;
 use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage, SubscriptionId};
-use search::ElasticsearchQuery;
+use searchnos::searcher::filter::Filter;
+use searchnos::searcher::search::{self, ElasticsearchQuery};
 use std::collections::HashMap;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;

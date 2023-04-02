@@ -1,11 +1,12 @@
 use std::fmt;
 
-use crate::filter::Filter;
 use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use super::filter::Filter;
 
 #[derive(Deserialize, Debug)]
 struct Document {

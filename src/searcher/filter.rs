@@ -31,7 +31,9 @@ impl Filter {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::filter::Filter;
+    use serde_json::json;
+
+    use crate::searcher::filter::Filter;
 
     #[test]
     fn test_search() {
