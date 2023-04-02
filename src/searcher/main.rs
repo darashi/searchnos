@@ -40,6 +40,7 @@ struct AppState {
     index_name: String,
     relay_info: String,
     max_subscriptions: usize,
+    max_filters: usize,
 }
 
 async fn send_events(
@@ -139,6 +140,11 @@ async fn handle_req(
         .into_iter()
         .map(|f| serde_json::from_value::<Filter>(f).context("parsing filter"))
         .collect::<Result<_, _>>()?;
+
+    // check filter length
+    if filters.len() > state.max_filters {
+        return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
+    }
 
     // respond only to filters with search
     if filters
@@ -416,6 +422,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         8
     };
+    let max_filters = if let Ok(max_filters) = env::var("MAX_FILTERS") {
+        max_filters
+            .parse::<usize>()
+            .expect("MAX_FILTERS is not a valid number")
+    } else {
+        8
+    };
 
     log::info!("connecting to elasticsearch");
 
@@ -440,6 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         es_client,
         index_name,
         max_subscriptions, // TODO include this in relay info
+        max_filters,       // TODO include this in relay info
     });
 
     let app = Router::new()
