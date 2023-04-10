@@ -28,17 +28,18 @@ services:
     container_name: indexer
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
-      - NOSTR_RELAYS=${NOSTR_RELAYS}
+      - SRC_RELAYS=${SRC_RELAYS}
+      - DEST_RELAYS=ws://searchnos:3000
     restart: always
     depends_on:
-      es:
-        condition: service_healthy
+      searchnos:
+        condition: service_started
 
-  searcher:
+  searchnos:
     build:
       context: .
-      dockerfile: ./docker/searcher/Dockerfile
-    container_name: searcher
+      dockerfile: ./docker/searchnos/Dockerfile
+    container_name: searchnos
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
