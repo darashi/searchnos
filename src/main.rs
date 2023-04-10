@@ -20,6 +20,8 @@ use env_logger;
 use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage};
 use searchnos::app_state::AppState;
+use searchnos::indexer::handlers::handle_event;
+use searchnos::indexer::schema::{create_index_template, put_pipeline};
 use searchnos::searcher::handlers::{handle_close, handle_req};
 use std::collections::HashMap;
 use std::{env, net::SocketAddr, sync::Arc};
@@ -41,6 +43,7 @@ async fn handle_text_message(
     match msg[0].as_str() {
         Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
         Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
+        Some("EVENT") => handle_event(state, addr, &msg).await?,
         _ => {
             return Err(anyhow::anyhow!("invalid message type"));
         }
@@ -221,6 +224,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let es_transport = TransportBuilder::new(conn_pool).disable_proxy().build()?;
     let es_client = Elasticsearch::new(es_transport);
     let index_name = "nostr".to_string();
+    let pipeline_name = "nostr-pipeline";
+    let index_template_name = "nostr";
+    put_pipeline(&es_client, pipeline_name).await?;
+    create_index_template(&es_client, index_template_name, pipeline_name).await?;
+
     log::info!("elasticsearch index ready");
 
     let mut relay_info = RelayInformationDocument::new();
