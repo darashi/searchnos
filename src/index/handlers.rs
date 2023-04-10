@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::app_state::AppState;
-use crate::indexer::indexes::{can_exist, index_name_for_event};
-use crate::indexer::text::extract_text;
+use crate::index::indexes::{can_exist, index_name_for_event};
+use crate::index::text::extract_text;
 
 #[derive(Debug, Serialize)]
 struct Document {
@@ -321,7 +321,7 @@ pub async fn handle_event(
 mod tests {
     use nostr_sdk::Tag;
 
-    use crate::indexer::handlers::extract_identifier_tag;
+    use crate::index::handlers::extract_identifier_tag;
 
     #[test]
     fn test_identifier_tag() {

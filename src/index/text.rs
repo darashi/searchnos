@@ -28,7 +28,7 @@ pub fn extract_text(event: &Event) -> String {
 mod tests {
     use nostr_sdk::{Keys, Kind, Tag};
 
-    use crate::indexer::text::extract_text;
+    use crate::index::text::extract_text;
 
     #[test]
     fn test_extract_text_note() {

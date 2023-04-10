@@ -33,7 +33,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::searcher::filter::Filter;
+    use crate::search::filter::Filter;
 
     #[test]
     fn test_search() {

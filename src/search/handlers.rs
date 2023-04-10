@@ -9,10 +9,10 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::app_state::AppState;
-use crate::searcher::filter::Filter;
-use crate::searcher::search::ElasticsearchQuery;
+use crate::search::filter::Filter;
+use crate::search::query::ElasticsearchQuery;
 
-use super::search;
+use super::query;
 
 async fn send_events(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
@@ -52,7 +52,7 @@ async fn query_then_send(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     subscription_id: SubscriptionId,
-    query: search::ElasticsearchQuery,
+    query: query::ElasticsearchQuery,
     cursor: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<DateTime<Utc>>> {
     let t0 = std::time::Instant::now();

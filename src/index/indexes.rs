@@ -36,7 +36,7 @@ pub fn can_exist(
 mod tests {
     use std::str::FromStr;
 
-    use crate::indexer::indexes::can_exist;
+    use crate::index::indexes::can_exist;
 
     #[test]
     fn test_can_exist() {

@@ -1,3 +1,3 @@
 pub mod filter;
 pub mod handlers;
-pub mod search;
+pub mod query;
