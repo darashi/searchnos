@@ -228,8 +228,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index_template_name = "nostr";
     put_pipeline(&es_client, pipeline_name).await?;
     create_index_template(&es_client, index_template_name, pipeline_name).await?;
-
     log::info!("elasticsearch index ready");
+
+    // TODO periodically purge old indexes
 
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable

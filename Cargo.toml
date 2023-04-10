@@ -3,14 +3,6 @@ name = "searchnos"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "indexer"
-path = "src/indexer/main.rs"
-
-[[bin]]
-name = "searcher"
-path = "src/main.rs"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -28,3 +20,7 @@ tower-http = { version = "*", features = ["add-extension"] }
 chrono = { version = "0.4.24", features = ["serde"] }
 anyhow = "1.0.70"
 rand = "0.8.5"
+
+[workspace]
+
+members = ["indexer"]
