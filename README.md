@@ -2,7 +2,11 @@
 
 This is a relay-like bridge server that provides a Nostr full-text search capability by using Elasticsearch as a backend. It emulates real-time search by polling Elasticsearch.
 
-At first glance, it behaves like a relay, but it only handles requests related to [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md). Unlike normal relays, it connects to other relays to retrieve notes. It ignores any events (`EVENT`) from the clients.
+Ssearchnos works like a relay, with a few exceptions.
+
+The most significant difference is that queries without the `search` property are ignored. This is mainly for load control; since Searchnos cannot respond so fast, it is intended to be used in conjunction with other regular relays that can handle non-search queries at great speed.
+
+Another difference is that Searchnos does not accept `EVENT` messages from regular connections. When opening a WebSocket connection, if a pre-configured API key is specified as `?api_key=foo` query parameter, the connection is treated specially as an administrative connection. Searchnos only receives `EVENT`s from such connections.
 
 👻 This project was created as an exercise in Rust programming for the author. 👻
 
