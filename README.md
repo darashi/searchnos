@@ -2,7 +2,7 @@
 
 This is a relay-like bridge server that provides a Nostr full-text search capability by using Elasticsearch as a backend. It emulates real-time search by polling Elasticsearch.
 
-At first glance, it behaves like a relay, but it only handles requests related to [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md). Unlike normal relays, it connects to other relays to retrieve notes. It ignores any events (`EVENT`) from the clients. Queries are interpreted as [Simple query string query](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-simple-query-string-query.html).
+At first glance, it behaves like a relay, but it only handles requests related to [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md). Unlike normal relays, it connects to other relays to retrieve notes. It ignores any events (`EVENT`) from the clients.
 
 👻 This project was created as an exercise in Rust programming for the author. 👻
 
