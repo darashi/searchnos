@@ -8,8 +8,7 @@ At first glance, it behaves like a relay, but it only handles requests related t
 
 ## Current Limitations
 
-* Supports filters that contains only one `"search"` property.
-* Supports only kind=1.
+* Supports filters that contains `"search"` property.
 * No spam filtering. 🙁
 * No indexing configurations. Just does N-gram indexing with some normalization.
 
@@ -32,6 +31,6 @@ Search:
 
 ## Configuration
 
-See `docker-compose.yaml` and `.env.example` for the configuration.
+See `compose.yaml` and `.env.example` for the configuration.
 
-`NOSTR_RELAYS` can be a comma-separated list of relay URLs.
+`SRC_RELAYS` and `DEST_RELAYS` can be a comma-separated list of relay URLs.
