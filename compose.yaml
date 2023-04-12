@@ -29,7 +29,7 @@ services:
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - SRC_RELAYS=${SRC_RELAYS}
-      - DEST_RELAYS=ws://searchnos:3000
+      - DEST_RELAYS=ws://searchnos:3000?api_key=${API_KEY}
     restart: always
     depends_on:
       searchnos:
@@ -43,6 +43,7 @@ services:
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
+      - API_KEY=${API_KEY}
     restart: always
     depends_on:
       es:

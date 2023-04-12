@@ -7,4 +7,5 @@ pub struct AppState {
     pub relay_info: String,
     pub max_subscriptions: usize,
     pub max_filters: usize,
+    pub api_key: String,
 }

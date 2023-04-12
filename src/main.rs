@@ -1,5 +1,5 @@
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, Query};
 use axum::http::request::Parts;
 use axum::{async_trait, Extension};
 use axum::{
@@ -23,10 +23,16 @@ use searchnos::app_state::AppState;
 use searchnos::index::handlers::handle_event;
 use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+#[derive(Deserialize, Debug)]
+struct Parameter {
+    api_key: Option<String>,
+}
 
 async fn handle_text_message(
     state: Arc<AppState>,
@@ -34,6 +40,7 @@ async fn handle_text_message(
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     addr: SocketAddr,
     text: &String,
+    is_admin_connection: bool,
 ) -> anyhow::Result<()> {
     let msg: Vec<serde_json::Value> = serde_json::from_str(&text)?;
     if msg.len() < 1 {
@@ -43,7 +50,13 @@ async fn handle_text_message(
     match msg[0].as_str() {
         Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
         Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
-        Some("EVENT") => handle_event(state, addr, &msg).await?,
+        Some("EVENT") => {
+            if is_admin_connection {
+                handle_event(state, addr, &msg).await?
+            } else {
+                return Err(anyhow::anyhow!("EVENT message not allowed")); // TODO support NIP-20
+            }
+        }
         _ => {
             return Err(anyhow::anyhow!("invalid message type"));
         }
@@ -58,10 +71,19 @@ async fn process_message(
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     addr: SocketAddr,
     msg: Message,
+    is_admin_connection: bool,
 ) -> anyhow::Result<()> {
     match &msg {
         Message::Text(text) => {
-            handle_text_message(state, sender, join_handles, addr, &text).await?
+            handle_text_message(
+                state,
+                sender,
+                join_handles,
+                addr,
+                &text,
+                is_admin_connection,
+            )
+            .await?
         }
         Message::Close(_) => {
             log::info!("{} close message received", addr);
@@ -88,8 +110,17 @@ async fn send_notice(
     Ok(())
 }
 
-async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
-    log::info!("{} new websocket connection", addr);
+async fn websocket(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    addr: SocketAddr,
+    is_admin_connection: bool,
+) {
+    log::info!(
+        "{} new websocket connection (admin: {})",
+        addr,
+        is_admin_connection
+    );
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
     let join_handles = Arc::new(Mutex::new(HashMap::<String, JoinHandle<()>>::new()));
@@ -101,7 +132,7 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
                     match ws_next {
                         Some(Ok(msg)) => {
                             let sender = sender.clone();
-                            let res = process_message(state.clone(), sender.clone(), join_handles.clone(), addr, msg).await;
+                            let res = process_message(state.clone(), sender.clone(), join_handles.clone(), addr, msg, is_admin_connection).await;
                             if let Err(e) = res {
                                 log::warn!("{} error processing message: {}", addr, e);
                                 let res = send_notice(sender, &format!("Error: {}", e)).await;
@@ -183,11 +214,18 @@ where
 
 async fn websocket_handler(
     _: ReturnRelayInfoExtractor,
+    params: Query<Parameter>,
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| websocket(socket, state, addr))
+    let is_admin_connection = if let Some(api_key) = &params.api_key {
+        state.api_key == *api_key
+    } else {
+        false
+    };
+
+    ws.on_upgrade(move |socket| websocket(socket, state, addr, is_admin_connection))
 }
 
 #[tokio::main]
@@ -201,6 +239,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = port
         .parse::<u16>()
         .expect("PORT is not a valid port number");
+    let api_key = env::var("API_KEY").expect(
+        "API_KEY is not set; specify the key for the administrative connection to searchnos",
+    );
+    if api_key.is_empty() {
+        panic!("API_KEY must not be empty");
+    }
     let max_subscriptions = if let Ok(max_subscriptions) = env::var("MAX_SUBSCRIPTIONS") {
         max_subscriptions
             .parse::<usize>()
@@ -246,6 +290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         index_name,
         max_subscriptions, // TODO include this in relay info
         max_filters,       // TODO include this in relay info
+        api_key,
     });
 
     let app = Router::new()
