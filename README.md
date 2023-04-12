@@ -24,7 +24,7 @@ Search:
 
     wscat --connect ws://localhost:3000
     Connected (press CTRL+C to quit)
-    > ["REQ", "SEARCH_TEST", {"search": "nostr|damus"}]
+    > ["REQ", "SEARCH_TEST", {"search": "nostr"}]
     (...snip...)
     < ["EOSE","SEARCH_TEST"]
     >
