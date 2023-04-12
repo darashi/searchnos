@@ -2,7 +2,7 @@ FROM rust:1.68 AS builder
 
 WORKDIR /usr/src/app
 
-COPY . .
+COPY ./indexer .
 RUN cargo install --path . --bin indexer
 
 FROM debian:bullseye-slim
