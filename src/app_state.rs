@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use elasticsearch::Elasticsearch;
 
 #[derive(Debug)]
@@ -8,4 +10,5 @@ pub struct AppState {
     pub max_subscriptions: usize,
     pub max_filters: usize,
     pub api_key: String,
+    pub ping_interval: Duration,
 }

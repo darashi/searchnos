@@ -19,10 +19,6 @@ async fn send_events(
     subscription_id: &SubscriptionId,
     events: Vec<nostr_sdk::Event>,
 ) -> anyhow::Result<()> {
-    if events.is_empty() {
-        sender.lock().await.send(Message::Ping(vec![])).await?;
-    }
-
     for event in events {
         let relay_msg = RelayMessage::new_event(subscription_id.clone(), event);
         sender

@@ -25,6 +25,7 @@ use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -110,6 +111,24 @@ async fn send_notice(
     Ok(())
 }
 
+async fn spawn_pinger(
+    state: Arc<AppState>,
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    addr: SocketAddr,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(state.ping_interval).await;
+            log::info!("{} sending ping", addr);
+            let res = sender.lock().await.send(Message::Ping(vec![])).await;
+            if let Err(e) = res {
+                log::warn!("{} error sending ping: {}", addr, e);
+                return;
+            }
+        }
+    })
+}
+
 async fn websocket(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -124,6 +143,9 @@ async fn websocket(
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
     let join_handles = Arc::new(Mutex::new(HashMap::<String, JoinHandle<()>>::new()));
+
+    // spawn pinger
+    let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
 
     tokio::spawn(async move {
         loop {
@@ -152,6 +174,7 @@ async fn websocket(
                             for join_handle in join_handles.lock().await.values() {
                                 join_handle.abort();
                             }
+                            pinger_handle.abort();
                             log::info!("{} disconnected", addr);
                             return;
                         }
@@ -259,6 +282,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         8
     };
+    let ping_interval = if let Ok(ping_interval) = env::var("PING_INTERVAL") {
+        ping_interval
+            .parse::<u64>()
+            .expect("PING_INTERVAL is not a valid number")
+    } else {
+        55
+    };
+    let ping_interval = Duration::from_secs(ping_interval);
 
     log::info!("connecting to elasticsearch");
 
@@ -291,6 +322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_subscriptions, // TODO include this in relay info
         max_filters,       // TODO include this in relay info
         api_key,
+        ping_interval,
     });
 
     let app = Router::new()
