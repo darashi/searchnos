@@ -21,6 +21,7 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage};
 use searchnos::app_state::AppState;
 use searchnos::index::handlers::handle_event;
+use searchnos::index::purge::spawn_index_purger;
 use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req};
 use serde::Deserialize;
@@ -304,6 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parse::<u64>()
             .expect("INDEX_TTL_DAYS is not a valid number")
     });
+    let index_allow_future_days = 1;
 
     log::info!("connecting to elasticsearch");
 
@@ -327,8 +329,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     log::info!("elasticsearch index ready");
 
-    // TODO periodically purge old indexes
-
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
     relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
@@ -347,7 +347,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key,
         ping_interval,
         index_ttl_days,
+        index_allow_future_days,
     });
+
+    if index_ttl_days.is_some() {
+        spawn_index_purger(app_state.clone()).await;
+    } else {
+        log::info!("index ttl is disabled");
+    }
 
     let app = Router::new()
         .route("/ping", get(ping))

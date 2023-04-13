@@ -195,8 +195,13 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
         return Ok(());
     }
 
-    // TODO allow_future_days
-    let ok = can_exist(&index_name, &Utc::now(), state.index_ttl_days, 1).unwrap_or(false);
+    let ok = can_exist(
+        &index_name,
+        &Utc::now(),
+        state.index_ttl_days,
+        state.index_allow_future_days,
+    )
+    .unwrap_or(false);
     if !ok {
         warn!("index {} is out of range; skipping", index_name);
         return Ok(());
