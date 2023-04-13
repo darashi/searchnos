@@ -12,4 +12,5 @@ pub struct AppState {
     pub max_filters: usize,
     pub api_key: String,
     pub ping_interval: Duration,
+    pub index_ttl_days: Option<u64>,
 }

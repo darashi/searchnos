@@ -299,6 +299,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         55
     };
     let ping_interval = Duration::from_secs(ping_interval);
+    let index_ttl_days: Option<u64> = env::var("INDEX_TTL_DAYS").ok().map(|index_ttl_days| {
+        index_ttl_days
+            .parse::<u64>()
+            .expect("INDEX_TTL_DAYS is not a valid number")
+    });
 
     log::info!("connecting to elasticsearch");
 
@@ -341,6 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_filters,       // TODO include this in relay info
         api_key,
         ping_interval,
+        index_ttl_days,
     });
 
     let app = Router::new()
