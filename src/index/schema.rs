@@ -61,13 +61,15 @@ pub async fn create_index_template(
     es_client: &Elasticsearch,
     template_name: &str,
     pipeline_name: &str,
+    index_name_prefix: &str,
+    index_alias_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("putting index template: {}", template_name);
     let res = es_client
         .indices()
         .put_index_template(IndicesPutIndexTemplateParts::Name(template_name))
         .body(json!({
-            "index_patterns": ["nostr-*"],
+            "index_patterns": [format!("{}-*", index_name_prefix)],
             "template": {
                 "settings": {
                     "index": {
@@ -157,7 +159,7 @@ pub async fn create_index_template(
                     }
                 },
                 "aliases": {
-                    "nostr": {}
+                    index_alias_name: {}
                 }
             }
         }))

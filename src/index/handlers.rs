@@ -187,13 +187,8 @@ async fn delete_parameterized_replaceable_event(
     Ok(())
 }
 
-pub async fn handle_update(
-    es_client: &Elasticsearch,
-    index_prefix: &str,
-    alias_name: &str,
-    event: &Event,
-) -> anyhow::Result<()> {
-    let index_name = index_name_for_event(index_prefix, event)?;
+pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Result<()> {
+    let index_name = index_name_for_event(&state.index_name_prefix, event)?;
     info!("{} {}", index_name, event.as_json());
 
     if is_ephemeral_event(event) {
@@ -207,6 +202,8 @@ pub async fn handle_update(
         return Ok(());
     }
 
+    let es_client = &state.es_client;
+    let index_alias_name = &state.index_alias_name;
     let id = event.id.to_hex();
 
     let doc = Document {
@@ -227,13 +224,13 @@ pub async fn handle_update(
     }
 
     if is_replaceable_event(event) {
-        delete_replaceable_event(es_client, alias_name, event).await?;
+        delete_replaceable_event(es_client, index_alias_name, event).await?;
     }
     if is_parameterized_replaceable_event(event) {
-        delete_parameterized_replaceable_event(es_client, alias_name, event).await?;
+        delete_parameterized_replaceable_event(es_client, index_alias_name, event).await?;
     }
     if let Kind::EventDeletion = event.kind {
-        handle_deletion_event(es_client, alias_name, event).await?;
+        handle_deletion_event(es_client, index_alias_name, event).await?;
     }
 
     Ok(())
@@ -241,7 +238,7 @@ pub async fn handle_update(
 
 async fn handle_deletion_event(
     es_client: &Elasticsearch,
-    index_name: &str,
+    index_alias_name: &str,
     event: &Event,
 ) -> anyhow::Result<()> {
     let deletion_event = event;
@@ -257,7 +254,7 @@ async fn handle_deletion_event(
     log::info!("ids to delete: {:?}", ids_to_delete);
 
     let res = es_client
-        .delete_by_query(DeleteByQueryParts::Index(&[index_name]))
+        .delete_by_query(DeleteByQueryParts::Index(&[index_alias_name]))
         .body(json!({
             "query": {
                 "bool": {
@@ -308,10 +305,7 @@ pub async fn handle_event(
         serde_json::from_value::<Event>(msg[1].clone()).context("parsing subscription id")?;
     event.verify().context("failed to verify event")?;
 
-    let index_template_name = "nostr"; // TODO parameterize
-    let alias_name = "nostr"; // TODO parameterize
-
-    handle_update(&state.es_client, &alias_name, &index_template_name, &event).await?;
+    handle_update(state, &event).await?;
     log::info!("{} EVENT {:?}", addr, event);
 
     Ok(())

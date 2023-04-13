@@ -307,11 +307,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn_pool = SingleNodeConnectionPool::new(es_url);
     let es_transport = TransportBuilder::new(conn_pool).disable_proxy().build()?;
     let es_client = Elasticsearch::new(es_transport);
-    let index_name = "nostr".to_string();
+    let index_name_prefix = "nostr";
+    let index_alias_name = "nostr";
     let pipeline_name = "nostr-pipeline";
     let index_template_name = "nostr";
     put_pipeline(&es_client, pipeline_name).await?;
-    create_index_template(&es_client, index_template_name, pipeline_name).await?;
+    create_index_template(
+        &es_client,
+        index_template_name,
+        pipeline_name,
+        index_name_prefix,
+        index_template_name,
+    )
+    .await?;
     log::info!("elasticsearch index ready");
 
     // TODO periodically purge old indexes
@@ -327,7 +335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_state = Arc::new(AppState {
         relay_info,
         es_client,
-        index_name,
+        index_name_prefix: index_name_prefix.to_string(),
+        index_alias_name: index_alias_name.to_string(),
         max_subscriptions, // TODO include this in relay info
         max_filters,       // TODO include this in relay info
         api_key,

@@ -53,7 +53,7 @@ async fn query_then_send(
 ) -> anyhow::Result<Option<DateTime<Utc>>> {
     let t0 = std::time::Instant::now();
     let (events, new_cursor) = query
-        .execute(&state.es_client, &state.index_name, cursor)
+        .execute(&state.es_client, &state.index_alias_name, cursor)
         .await?;
     let search_time = t0.elapsed().as_millis();
     let num_hits = events.len();
