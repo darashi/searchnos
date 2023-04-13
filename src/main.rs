@@ -256,6 +256,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("RUST_LOG", "info");
     env_logger::init();
 
+    let version = format!(
+        "v{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_HASH").chars().take(7).collect::<String>()
+    );
+    let pkg_name = env!("CARGO_PKG_NAME").to_string();
+
+    log::info!("{} {}", pkg_name, version);
+
     // env vars
     let es_url = env::var("ES_URL").expect("ES_URL is not set; set it to the URL of elasticsearch");
     let port = env::var("PORT").expect("PORT is not set; set it to the port number to listen on");
@@ -311,8 +320,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
     relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
     relay_info.supported_nips = Some(vec![1, 9, 11, 12, 15, 16, 22, 28, 33, 50]);
-    relay_info.software = Some(env!("CARGO_PKG_NAME").to_string());
-    relay_info.version = Some(env!("CARGO_PKG_VERSION").to_string());
+    relay_info.software = Some(pkg_name);
+    relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info).unwrap();
 
     let app_state = Arc::new(AppState {
