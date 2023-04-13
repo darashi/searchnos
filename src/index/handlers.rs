@@ -306,7 +306,7 @@ pub async fn handle_event(
     event.verify().context("failed to verify event")?;
 
     handle_update(state, &event).await?;
-    log::info!("{} EVENT {:?}", addr, event);
+    log::info!("{} EVENT {}", addr, event.as_json());
 
     Ok(())
 }
