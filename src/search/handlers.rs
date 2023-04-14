@@ -113,11 +113,18 @@ pub async fn handle_req(
         return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
     }
 
-    // respond only to filters with search
-    if filters
-        .iter()
-        .any(|f| f.search.as_ref().unwrap_or(&"".to_string()).is_empty())
-    {
+    let filters: Vec<Filter> = filters
+        .into_iter()
+        .filter(|f| {
+            if let Some(s) = &f.search {
+                !s.is_empty()
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    if filters.is_empty() {
         return Err(anyhow::anyhow!("only filter with search is supported"));
     }
 
