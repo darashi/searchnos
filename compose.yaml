@@ -27,7 +27,6 @@ services:
       dockerfile: ./docker/indexer/Dockerfile
     container_name: indexer
     environment:
-      - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - SRC_RELAYS=${SRC_RELAYS}
       - DEST_RELAYS=ws://searchnos:3000?api_key=${API_KEY}
     restart: always
