@@ -306,8 +306,7 @@ pub async fn handle_event(
         return Err(anyhow::anyhow!("invalid array length"));
     }
 
-    let event =
-        serde_json::from_value::<Event>(msg[1].clone()).context("parsing subscription id")?;
+    let event = serde_json::from_value::<Event>(msg[1].clone()).context("parsing event")?;
     event.verify().context("failed to verify event")?;
 
     handle_update(state, &event).await?;
