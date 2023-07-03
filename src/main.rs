@@ -92,9 +92,7 @@ async fn process_message(
             return Ok(());
         }
         Message::Pong(_) => {}
-        Message::Ping(_) => {
-            return send_pong(sender).await;
-        }
+        Message::Ping(_) => {}
         _ => {
             return Err(anyhow::anyhow!("non-text message {:?}", msg));
         }
@@ -112,13 +110,6 @@ async fn send_notice(
         .await
         .send(Message::Text(notice.as_json()))
         .await?;
-    Ok(())
-}
-
-async fn send_pong(
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-) -> anyhow::Result<()> {
-    sender.lock().await.send(Message::Pong(vec![])).await?;
     Ok(())
 }
 
