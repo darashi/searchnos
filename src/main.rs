@@ -92,6 +92,7 @@ async fn process_message(
             return Ok(());
         }
         Message::Pong(_) => {}
+        Message::Ping(_) => {}
         _ => {
             return Err(anyhow::anyhow!("non-text message {:?}", msg));
         }
