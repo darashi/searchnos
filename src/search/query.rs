@@ -110,22 +110,22 @@ impl ElasticsearchQuery {
             (Some(since), Some(until)) => Some(json!({
                 "range": {
                     "event.created_at": {
-                        "gt": since.as_u64(),
-                        "lt": until.as_u64()
+                        "gt": since.as_u64()*1000,
+                        "lt": until.as_u64()*1000
                     }
                 }
             })),
             (Some(since), None) => Some(json!({
                 "range": {
                     "event.created_at": {
-                        "gt": since.as_u64()
+                        "gt": since.as_u64()*1000
                     }
                 }
             })),
             (None, Some(until)) => Some(json!({
                 "range": {
                     "event.created_at": {
-                        "lt": until.as_u64()
+                        "lt": until.as_u64()*1000,
                     }
                 }
             })),
