@@ -227,7 +227,7 @@ where
             }
             let res = axum::response::Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-Type", "application/text")
+                .header("Content-Type", "text/plain")
                 .body("Please use a Nostr client to connect.".to_string())
                 .unwrap()
                 .into_response();
