@@ -334,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
     relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
-    relay_info.supported_nips = Some(vec![1, 9, 11, 12, 16, 22, 28, 33, 50]);
+    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 50]);
     relay_info.software = Some(pkg_name);
     relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info).unwrap();
