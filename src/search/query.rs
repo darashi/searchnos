@@ -37,45 +37,22 @@ fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
     })
 }
 
-fn gen_prefix_search_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
+fn gen_exact_search_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
 where
     T: fmt::Display,
 {
     conds.and_then(|ids| {
         let ids: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>();
-        // often requested to be an exact match search with 64 characters,
-        // so it is processed separately from the prefix search.
-        let (ids, id_prefixes): (Vec<_>, Vec<_>) = ids.into_iter().partition(|id| id.len() == 64);
 
-        let ids_cond = if ids.is_empty() {
-            vec![]
+        if ids.is_empty() {
+            None
         } else {
-            vec![json!({
+            Some(json!({
                 "terms": {
                     field: ids
                 }
-            })]
-        };
-
-        let id_prefix_conds = id_prefixes
-            .into_iter()
-            .map(|id| {
-                json!({
-                    "prefix": {
-                        field: id
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let should_conds = [ids_cond, id_prefix_conds].concat();
-
-        Some(json!({
-            "bool": {
-                "should": should_conds,
-                "minimum_should_match": 1
-            }
-        }))
+            }))
+        }
     })
 }
 
@@ -140,8 +117,8 @@ impl ElasticsearchQuery {
             }))
         });
 
-        let ids_condition = gen_prefix_search_query("event.id", filter.ids);
-        let authors_condition = gen_prefix_search_query("event.pubkey", filter.authors);
+        let ids_condition = gen_exact_search_query("event.id", filter.ids);
+        let authors_condition = gen_exact_search_query("event.pubkey", filter.authors);
 
         let mut must_conditinos = vec![
             ids_condition,
