@@ -218,6 +218,7 @@ where
                     let res = axum::response::Response::builder()
                         .status(StatusCode::OK)
                         .header("Content-Type", "application/json")
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(relay_info)
                         .unwrap()
                         .into_response();
