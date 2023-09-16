@@ -113,21 +113,6 @@ pub async fn handle_req(
         return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
     }
 
-    let filters: Vec<Filter> = filters
-        .into_iter()
-        .filter(|f| {
-            if let Some(s) = &f.search {
-                !s.is_empty()
-            } else {
-                false
-            }
-        })
-        .collect();
-
-    if filters.is_empty() {
-        return Err(anyhow::anyhow!("only filter with search is supported"));
-    }
-
     let mut cursors: Vec<Option<DateTime<Utc>>> = filters.iter().map(|_| None).collect();
 
     // do the first search
