@@ -1,6 +1,8 @@
 use anyhow::Context;
+use axum::extract::ws::{Message, WebSocket};
 use chrono::Utc;
 use elasticsearch::{DeleteByQueryParts, Elasticsearch, IndexParts};
+use futures::sink::SinkExt;
 use log::{error, info, warn};
 use nostr_sdk::prelude::*;
 use nostr_sdk::Event;
@@ -8,6 +10,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::app_state::AppState;
 use crate::index::indexes::{can_exist, index_name_for_event};
@@ -297,7 +300,23 @@ async fn handle_deletion_event(
     Ok(())
 }
 
+async fn send_ok(
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    event: &Event,
+    status: bool,
+    message: &str,
+) -> anyhow::Result<()> {
+    let relay_msg = RelayMessage::new_ok(event.id, status, message);
+    sender
+        .lock()
+        .await
+        .send(Message::Text(relay_msg.as_json()))
+        .await?;
+    Ok(())
+}
+
 pub async fn handle_event(
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     state: Arc<AppState>,
     addr: SocketAddr,
     msg: &Vec<serde_json::Value>,
@@ -306,17 +325,30 @@ pub async fn handle_event(
     if msg.len() != 2 {
         return Err(anyhow::anyhow!("invalid array length"));
     }
-    if is_admin_connection {
-        return Err(anyhow::anyhow!("EVENT message not allowed")); // TODO support NIP-20
-    }
 
     let event = serde_json::from_value::<Event>(msg[1].clone()).context("parsing event")?;
     event.verify().context("failed to verify event")?;
 
-    handle_update(state, &event).await?;
-    log::info!("{} EVENT {}", addr, event.as_json());
+    if !is_admin_connection {
+        log::info!("{} blocked EVENT {}", addr, event.as_json());
+        return send_ok(sender, &event, false, "blocked: EVENT not allowed").await;
+    }
 
-    Ok(())
+    match handle_update(state, &event).await {
+        Ok(_) => {
+            log::info!("{} accepted EVENT {}", addr, event.as_json());
+            return send_ok(sender, &event, true, "").await;
+        }
+        Err(e) => {
+            log::error!(
+                "{} failed to handle EVENT {}: {:?}",
+                addr,
+                event.as_json(),
+                e
+            );
+            return send_ok(sender, &event, false, "error: failed to handle EVENT").await;
+        }
+    }
 }
 
 #[cfg(test)]

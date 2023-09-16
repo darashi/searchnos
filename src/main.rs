@@ -52,7 +52,7 @@ async fn handle_text_message(
     match msg[0].as_str() {
         Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
         Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
-        Some("EVENT") => handle_event(state, addr, &msg, is_admin_connection).await?,
+        Some("EVENT") => handle_event(sender, state, addr, &msg, is_admin_connection).await?,
         _ => {
             return Err(anyhow::anyhow!("invalid message type"));
         }
