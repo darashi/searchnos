@@ -53,7 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let RelayPoolNotification::Event(_url, event) = notification {
                 log::info!("received event: {}", event.as_json());
                 // TODO check dates
-                dest_client.send_event(event).await?;
+                dest_client
+                    .send_msg(ClientMessage::new_event(event))
+                    .await?;
             }
         }
     }
