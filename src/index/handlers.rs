@@ -301,9 +301,13 @@ pub async fn handle_event(
     state: Arc<AppState>,
     addr: SocketAddr,
     msg: &Vec<serde_json::Value>,
+    is_admin_connection: bool,
 ) -> anyhow::Result<()> {
     if msg.len() != 2 {
         return Err(anyhow::anyhow!("invalid array length"));
+    }
+    if is_admin_connection {
+        return Err(anyhow::anyhow!("EVENT message not allowed")); // TODO support NIP-20
     }
 
     let event = serde_json::from_value::<Event>(msg[1].clone()).context("parsing event")?;

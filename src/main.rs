@@ -52,13 +52,7 @@ async fn handle_text_message(
     match msg[0].as_str() {
         Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
         Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
-        Some("EVENT") => {
-            if is_admin_connection {
-                handle_event(state, addr, &msg).await?
-            } else {
-                return Err(anyhow::anyhow!("EVENT message not allowed")); // TODO support NIP-20
-            }
-        }
+        Some("EVENT") => handle_event(state, addr, &msg, is_admin_connection).await?,
         _ => {
             return Err(anyhow::anyhow!("invalid message type"));
         }
