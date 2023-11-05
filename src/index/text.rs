@@ -1,5 +1,4 @@
 pub use nostr_sdk::prelude::*;
-use nostr_sdk::Event;
 use std::collections::HashMap;
 
 pub fn extract_text(event: &Event) -> String {

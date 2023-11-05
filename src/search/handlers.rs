@@ -13,6 +13,7 @@ use crate::search::filter::Filter;
 use crate::search::query::ElasticsearchQuery;
 
 use super::query;
+use nostr_sdk::JsonUtil;
 
 async fn send_events(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,

@@ -19,6 +19,7 @@ use elasticsearch::{
 use env_logger;
 use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage};
+use nostr_sdk::JsonUtil;
 use searchnos::app_state::AppState;
 use searchnos::index::handlers::handle_event;
 use searchnos::index::purge::spawn_index_purger;
