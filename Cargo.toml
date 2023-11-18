@@ -18,6 +18,7 @@ futures = "0.3"
 chrono = { version = "0.4.24", features = ["serde"] }
 anyhow = "1.0.70"
 rand = "0.8.5"
+clap = { version = "4.4.8", features = ["derive", "env"] }
 
 [workspace]
 

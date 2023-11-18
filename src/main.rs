@@ -249,10 +249,48 @@ async fn websocket_handler(
     ws.on_upgrade(move |socket| websocket(socket, state, addr, is_admin_connection))
 }
 
+use clap::Parser;
+#[derive(Parser, Debug)]
+#[command(about,long_about = None)]
+struct Args {
+    /// Port to listen on
+    #[arg(long, env)]
+    port: u16,
+
+    /// URL of elasticsearch
+    #[arg(long, env)]
+    es_url: String,
+
+    /// API key for administrative connection to searchnos
+    #[arg(long, env)]
+    api_key: String,
+
+    /// Maximum number of subscriptions per client
+    #[arg(long, env, default_value_t = 8)]
+    max_subscriptions: usize,
+
+    /// Maximum number of filters per subscription
+    #[arg(long, env, default_value_t = 8)]
+    max_filters: usize,
+
+    /// Ping interval in seconds
+    #[arg(long, env, default_value_t = 55)]
+    ping_interval: u64,
+
+    /// Index TTL in days
+    #[arg(long, env)]
+    index_ttl_days: Option<u64>,
+
+    /// Maximum number of days in the future to accept events for
+    #[arg(long, env, default_value_t = 1)]
+    index_allow_future_days: u64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("RUST_LOG", "info");
     env_logger::init();
+    let args = Args::parse();
 
     let version = format!(
         "v{}-{}",
@@ -263,51 +301,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("{} {}", pkg_name, version);
 
-    // env vars
-    let es_url = env::var("ES_URL").expect("ES_URL is not set; set it to the URL of elasticsearch");
-    let port = env::var("PORT").expect("PORT is not set; set it to the port number to listen on");
-    let port = port
-        .parse::<u16>()
-        .expect("PORT is not a valid port number");
-    let api_key = env::var("API_KEY").expect(
-        "API_KEY is not set; specify the key for the administrative connection to searchnos",
-    );
-    if api_key.is_empty() {
-        panic!("API_KEY must not be empty");
-    }
-    let max_subscriptions = if let Ok(max_subscriptions) = env::var("MAX_SUBSCRIPTIONS") {
-        max_subscriptions
-            .parse::<usize>()
-            .expect("MAX_SUBSCRIPTIONS is not a valid number")
-    } else {
-        8
-    };
-    let max_filters = if let Ok(max_filters) = env::var("MAX_FILTERS") {
-        max_filters
-            .parse::<usize>()
-            .expect("MAX_FILTERS is not a valid number")
-    } else {
-        8
-    };
-    let ping_interval = if let Ok(ping_interval) = env::var("PING_INTERVAL") {
-        ping_interval
-            .parse::<u64>()
-            .expect("PING_INTERVAL is not a valid number")
-    } else {
-        55
-    };
-    let ping_interval = Duration::from_secs(ping_interval);
-    let index_ttl_days: Option<u64> = env::var("INDEX_TTL_DAYS").ok().map(|index_ttl_days| {
-        index_ttl_days
-            .parse::<u64>()
-            .expect("INDEX_TTL_DAYS is not a valid number")
-    });
-    let index_allow_future_days = 1;
-
     log::info!("connecting to elasticsearch");
 
     // prepare elasticsearch client
-    let es_url = Url::parse(&es_url).expect("invalid elasticsearch url");
+    let es_url = Url::parse(&args.es_url).expect("invalid elasticsearch url");
     let conn_pool = SingleNodeConnectionPool::new(es_url);
     let es_transport = TransportBuilder::new(conn_pool).disable_proxy().build()?;
     let es_client = Elasticsearch::new(es_transport);
@@ -339,15 +336,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         es_client,
         index_name_prefix: index_name_prefix.to_string(),
         index_alias_name: index_alias_name.to_string(),
-        max_subscriptions, // TODO include this in relay info
-        max_filters,       // TODO include this in relay info
-        api_key,
-        ping_interval,
-        index_ttl_days,
-        index_allow_future_days,
+        max_subscriptions: args.max_subscriptions, // TODO include this in relay info
+        max_filters: args.max_filters,             // TODO include this in relay info
+        api_key: args.api_key,
+        ping_interval: Duration::from_secs(args.ping_interval),
+        index_ttl_days: args.index_ttl_days,
+        index_allow_future_days: args.index_allow_future_days,
     });
 
-    if index_ttl_days.is_some() {
+    if args.index_ttl_days.is_some() {
         spawn_index_purger(app_state.clone()).await;
     } else {
         log::info!("index ttl is disabled");
@@ -358,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(websocket_handler))
         .layer(Extension(app_state));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     log::info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
