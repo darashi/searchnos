@@ -286,12 +286,7 @@ struct Args {
     index_allow_future_days: u64,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env::set_var("RUST_LOG", "info");
-    env_logger::init();
-    let args = Args::parse();
-
+async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     let version = format!(
         "v{}-{}",
         env!("CARGO_PKG_VERSION"),
@@ -338,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         index_alias_name: index_alias_name.to_string(),
         max_subscriptions: args.max_subscriptions, // TODO include this in relay info
         max_filters: args.max_filters,             // TODO include this in relay info
-        api_key: args.api_key,
+        api_key: args.api_key.to_string(),
         ping_interval: Duration::from_secs(args.ping_interval),
         index_ttl_days: args.index_ttl_days,
         index_allow_future_days: args.index_allow_future_days,
@@ -354,6 +349,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ping", get(ping))
         .route("/", get(websocket_handler))
         .layer(Extension(app_state));
+
+    Ok(app)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env::set_var("RUST_LOG", "info");
+    env_logger::init();
+    let args = Args::parse();
+    let app = app(&args).await?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     log::info!("listening on {}", addr);
