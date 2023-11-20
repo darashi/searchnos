@@ -369,3 +369,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use super::*;
+
+    fn find_available_port() -> Option<u16> {
+        (32768..65535).find(
+            |port| match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+                Ok(_) => true,
+                Err(_) => false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn somke_test() {
+        env_logger::init();
+
+        let port = find_available_port().expect("no available port found");
+        let args = Args {
+            port,
+            es_url: "http://elastic:super-secret-nostaro@localhost:9200".to_string(),
+            api_key: "TEST_API_KEY".to_string(),
+            max_subscriptions: 100,
+            max_filters: 32,
+            ping_interval: 55,
+            index_ttl_days: None,
+            index_allow_future_days: 1,
+        };
+        let app = app(&args).await.unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+
+        let join_handle = tokio::spawn(async move {
+            axum::Server::bind(&addr)
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap();
+        });
+
+        let keys = nostr_sdk::Keys::generate();
+        let client = nostr_sdk::Client::new(&keys);
+        client
+            .add_relay(format!("ws://localhost:{}", args.port), None)
+            .await
+            .unwrap();
+        client.connect().await;
+
+        let filter = nostr_sdk::Filter::new().search("nostr").limit(0);
+        let res = client
+            .get_events_of_with_opts(
+                vec![filter],
+                Some(Duration::from_secs(5)),
+                nostr_sdk::FilterOptions::ExitOnEOSE,
+            )
+            .await;
+        assert!(res.is_ok());
+
+        join_handle.abort();
+    }
+}
