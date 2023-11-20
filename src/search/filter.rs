@@ -90,7 +90,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Filter>(src).unwrap().tags(),
             vec![(
-                "#t".to_string(),
+                "t".to_string(),
                 vec!["hello".to_string(), "world".to_string()]
             )]
             .into_iter()
