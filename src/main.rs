@@ -37,31 +37,6 @@ struct Parameter {
     api_key: Option<String>,
 }
 
-async fn handle_text_message(
-    state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    addr: SocketAddr,
-    text: &String,
-    is_admin_connection: bool,
-) -> anyhow::Result<()> {
-    let msg: Vec<serde_json::Value> = serde_json::from_str(&text)?;
-    if msg.len() < 1 {
-        return Err(anyhow::anyhow!("invalid array length"));
-    }
-
-    match msg[0].as_str() {
-        Some("REQ") => handle_req(state, sender, join_handles, addr, &msg).await?,
-        Some("CLOSE") => handle_close(join_handles, addr, &msg).await?,
-        Some("EVENT") => handle_event(sender, state, addr, &msg, is_admin_connection).await?,
-        _ => {
-            return Err(anyhow::anyhow!("invalid message type"));
-        }
-    }
-
-    Ok(())
-}
-
 async fn process_message(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
@@ -72,15 +47,20 @@ async fn process_message(
 ) -> anyhow::Result<()> {
     match &msg {
         Message::Text(text) => {
-            handle_text_message(
-                state,
-                sender,
-                join_handles,
-                addr,
-                &text,
-                is_admin_connection,
-            )
-            .await?
+            let client_message = nostr_sdk::ClientMessage::from_json(text)?;
+            match client_message {
+                nostr_sdk::ClientMessage::Req {
+                    subscription_id,
+                    filters,
+                } => handle_req(state, sender, join_handles, addr, &subscription_id, filters).await,
+                nostr_sdk::ClientMessage::Close(subscription_id) => {
+                    handle_close(join_handles, addr, &subscription_id).await
+                }
+                nostr_sdk::ClientMessage::Event(event) => {
+                    handle_event(sender, state, addr, &event, is_admin_connection).await
+                }
+                _ => Err(anyhow::anyhow!("invalid message type")),
+            }?
         }
         Message::Close(_) => {
             log::info!("{} close message received", addr);

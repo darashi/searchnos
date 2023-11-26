@@ -1,4 +1,3 @@
-use anyhow::Context;
 use axum::extract::ws::{Message, WebSocket};
 use chrono::{DateTime, Utc};
 use futures::sink::SinkExt;
@@ -9,7 +8,6 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::app_state::AppState;
-use crate::search::filter::Filter;
 use crate::search::query::ElasticsearchQuery;
 
 use super::query;
@@ -75,16 +73,9 @@ pub async fn handle_req(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     addr: SocketAddr,
-    msg: &Vec<serde_json::Value>,
+    subscription_id: &SubscriptionId,
+    filters: Vec<nostr_sdk::Filter>,
 ) -> anyhow::Result<()> {
-    if msg.len() < 3 {
-        return Err(anyhow::anyhow!("too few arguments"));
-    }
-    let subscription_id: String =
-        serde_json::from_value(msg[1].clone()).context("invalid subscription id")?;
-    let subscription_id = SubscriptionId::new(subscription_id);
-    let filters = msg[2..].to_vec();
-
     log::info!(
         "{} [{}] req {:?}",
         addr,
@@ -102,12 +93,6 @@ pub async fn handle_req(
 
     // expire old subscription if exists
     stop_subscription(join_handles.clone(), &subscription_id.clone()).await;
-
-    // prepare filters and cursors
-    let filters: Vec<Filter> = filters
-        .into_iter()
-        .map(|f| serde_json::from_value::<Filter>(f).context("parsing filter"))
-        .collect::<Result<_, _>>()?;
 
     // check filter length
     if filters.len() > state.max_filters {
@@ -187,17 +172,9 @@ async fn stop_subscription(
 pub async fn handle_close(
     join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     addr: SocketAddr,
-    msg: &Vec<serde_json::Value>,
+    subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
-    if msg.len() != 2 {
-        return Err(anyhow::anyhow!("invalid array length"));
-    }
-
-    let subscription_id = serde_json::from_value::<SubscriptionId>(msg[1].clone())
-        .context("parsing subscription id")?;
-
     log::info!("{} CLOSE {:?}", addr, subscription_id.to_string());
-
     stop_subscription(join_handles, &subscription_id).await;
 
     Ok(())

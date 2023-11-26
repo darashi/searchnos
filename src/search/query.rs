@@ -1,12 +1,10 @@
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use chrono::{DateTime, Utc};
 use elasticsearch::{Elasticsearch, SearchParts};
 use nostr_sdk::prelude::Event;
 use serde::Deserialize;
 use serde_json::{json, Value};
-
-use super::filter::Filter;
 
 #[derive(Deserialize, Debug)]
 struct Document {
@@ -37,51 +35,50 @@ fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
     })
 }
 
-fn gen_exact_search_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
+fn gen_exact_search_query<T>(field: &str, conds: HashSet<T>) -> Option<Value>
 where
     T: fmt::Display,
 {
-    conds.and_then(|ids| {
-        let ids: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let ids: Vec<String> = conds
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
 
-        if ids.is_empty() {
-            None
-        } else {
-            Some(json!({
-                "terms": {
-                    field: ids
-                }
-            }))
-        }
-    })
-}
-
-fn gen_tag_query<T>(field: &str, conds: Option<Vec<T>>) -> Option<Value>
-where
-    T: fmt::Display,
-{
-    conds.and_then(|conds| {
-        if conds.is_empty() {
-            return None;
-        }
-        let conds: Vec<String> = conds
-            .into_iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>();
+    if ids.is_empty() {
+        None
+    } else {
         Some(json!({
             "terms": {
-                field: conds
+                field: ids
             }
         }))
-    })
+    }
+}
+
+fn gen_tag_query<T>(field: &str, conds: &HashSet<T>) -> Option<Value>
+where
+    T: fmt::Display,
+{
+    if conds.is_empty() {
+        return None;
+    }
+    let conds: Vec<String> = conds
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
+    Some(json!({
+        "terms": {
+            field: conds
+        }
+    }))
 }
 
 impl ElasticsearchQuery {
-    pub fn from_filter(filter: Filter, cursor: Option<DateTime<Utc>>) -> Self {
+    pub fn from_filter(filter: nostr_sdk::Filter, cursor: Option<DateTime<Utc>>) -> Self {
         const MAX_LIMIT: usize = 10_000;
         const DEFAULT_LIMIT: usize = 500;
 
-        let tags = &filter.tags();
+        let tags = &filter.generic_tags;
 
         let created_at_condition = match (filter.since, filter.until) {
             (Some(since), Some(until)) => Some(json!({
@@ -109,13 +106,15 @@ impl ElasticsearchQuery {
             (None, None) => None,
         };
 
-        let kinds_condition = filter.kinds.and_then(|kinds| {
+        let kinds_condition = if filter.kinds.is_empty() {
+            None
+        } else {
             Some(json!({
                 "terms": {
-                    "event.kind": kinds
+                    "event.kind": filter.kinds
                 }
             }))
-        });
+        };
 
         let ids_condition = gen_exact_search_query("event.id", filter.ids);
         let authors_condition = gen_exact_search_query("event.pubkey", filter.authors);
@@ -139,7 +138,7 @@ impl ElasticsearchQuery {
         }
 
         for (tag_name, values) in tags {
-            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), Some(values.clone()));
+            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), &values);
             must_conditinos.push(tag_condition);
         }
 
