@@ -32,7 +32,7 @@ async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
     }
     let current_time = chrono::Utc::now();
     let indices = res.json::<HashMap<String, Value>>().await?;
-    log::info!("Number of ondices available: {:?}", indices.len());
+    log::info!("Number of indices available: {:?}", indices.len());
     for (name, _index_info) in indices {
         let can_exist = can_exist(
             &name,
