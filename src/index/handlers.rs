@@ -194,6 +194,8 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
     let index_name = index_name_for_event(&state.index_name_prefix, event)?;
     info!("{} {}", index_name, event.as_json());
 
+    state.tx.send(event.clone())?;
+
     if is_ephemeral_event(event) {
         return Ok(());
     }
