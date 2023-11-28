@@ -47,6 +47,7 @@ async fn process_message(
 ) -> anyhow::Result<()> {
     match &msg {
         Message::Text(text) => {
+            log::info!("{} RECEIVED {}", addr, text);
             let client_message = nostr_sdk::ClientMessage::from_json(text)?;
             match client_message {
                 nostr_sdk::ClientMessage::Req {
