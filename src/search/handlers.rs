@@ -5,13 +5,12 @@ use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 use crate::app_state::AppState;
 use crate::search::query::ElasticsearchQuery;
 
 use super::query;
-use nostr_sdk::JsonUtil;
+use nostr_sdk::{Filter, JsonUtil};
 
 async fn send_events(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
@@ -71,7 +70,7 @@ async fn query_then_send(
 pub async fn handle_req(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
     addr: SocketAddr,
     subscription_id: &SubscriptionId,
     filters: Vec<nostr_sdk::Filter>,
@@ -83,7 +82,7 @@ pub async fn handle_req(
         filters
     );
 
-    let num_ongoing_subscriptions = join_handles.lock().await.len();
+    let num_ongoing_subscriptions = subscriptions.lock().await.len();
     if num_ongoing_subscriptions + 1 > state.max_subscriptions {
         return Err(anyhow::anyhow!(
             "too many ongoing subscriptions: {}",
@@ -92,90 +91,51 @@ pub async fn handle_req(
     }
 
     // expire old subscription if exists
-    stop_subscription(join_handles.clone(), &subscription_id.clone()).await;
+    stop_subscription(subscriptions.clone(), subscription_id).await;
 
     // check filter length
     if filters.len() > state.max_filters {
         return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
     }
 
-    let mut cursors: Vec<Option<DateTime<Utc>>> = filters.iter().map(|_| None).collect();
-
     // do the first search
-    for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
+    for filter in filters.iter() {
         let query = ElasticsearchQuery::from_filter(filter.clone(), None);
 
-        let new_cursor = query_then_send(
+        query_then_send(
             addr,
             state.clone(),
             sender.clone(),
             subscription_id.clone(),
             query,
             None,
-        );
-        *cursor = new_cursor.await?;
+        )
+        .await?;
     }
     send_eose(sender.clone(), &subscription_id).await?;
 
-    let sid_ = subscription_id.clone();
-    let join_handle = tokio::spawn(async move {
-        let mut cursors = cursors;
-        loop {
-            let wait = 5.0 + (rand::random::<f64>() * 5.0); // TODO better scheduling
-            tokio::time::sleep(tokio::time::Duration::from_secs_f64(wait)).await;
-            log::info!("{} [{}] cont. {:?}", addr, &sid_.to_string(), filters);
-
-            for (filter, cursor) in filters.iter().zip(cursors.iter_mut()) {
-                let query = ElasticsearchQuery::from_filter(filter.clone(), *cursor);
-
-                let res = query_then_send(
-                    addr,
-                    state.clone(),
-                    sender.clone(),
-                    sid_.clone(),
-                    query,
-                    *cursor,
-                )
-                .await;
-                match res {
-                    Ok(new_cursor) => {
-                        *cursor = new_cursor;
-                    }
-                    Err(e) => {
-                        log::error!("error in continuing search: {:?}", e);
-                    }
-                }
-            }
-        }
-    });
-    join_handles
+    subscriptions
         .lock()
         .await
-        .insert(subscription_id.to_string(), join_handle);
+        .insert(subscription_id.clone(), filters);
 
     Ok(())
 }
 
 async fn stop_subscription(
-    join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
     subscription_id: &SubscriptionId,
 ) {
-    let removed = join_handles
-        .lock()
-        .await
-        .remove(&subscription_id.to_string());
-    if let Some(task) = removed {
-        task.abort();
-    }
+    subscriptions.lock().await.remove(subscription_id);
 }
 
 pub async fn handle_close(
-    join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
     addr: SocketAddr,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
     log::info!("{} CLOSE {:?}", addr, subscription_id.to_string());
-    stop_subscription(join_handles, &subscription_id).await;
+    stop_subscription(subscriptions, &subscription_id).await;
 
     Ok(())
 }

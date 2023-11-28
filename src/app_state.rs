@@ -14,4 +14,5 @@ pub struct AppState {
     pub ping_interval: Duration,
     pub index_ttl_days: Option<u64>,
     pub index_allow_future_days: u64,
+    pub tx: tokio::sync::broadcast::Sender<nostr_sdk::Event>,
 }

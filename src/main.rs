@@ -31,6 +31,7 @@ use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Deserialize, Debug)]
 struct Parameter {
@@ -40,7 +41,7 @@ struct Parameter {
 async fn process_message(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    join_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subscriptions: Arc<Mutex<HashMap<nostr_sdk::SubscriptionId, Vec<nostr_sdk::Filter>>>>,
     addr: SocketAddr,
     msg: Message,
     is_admin_connection: bool,
@@ -53,9 +54,19 @@ async fn process_message(
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
                     filters,
-                } => handle_req(state, sender, join_handles, addr, &subscription_id, filters).await,
+                } => {
+                    handle_req(
+                        state,
+                        sender,
+                        subscriptions,
+                        addr,
+                        &subscription_id,
+                        filters,
+                    )
+                    .await
+                }
                 nostr_sdk::ClientMessage::Close(subscription_id) => {
-                    handle_close(join_handles, addr, &subscription_id).await
+                    handle_close(subscriptions, addr, &subscription_id).await
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
                     handle_event(sender, state, addr, &event, is_admin_connection).await
@@ -106,6 +117,28 @@ async fn spawn_pinger(
         }
     })
 }
+fn match_search(normalized_content: &str, filter: &nostr_sdk::Filter) -> bool {
+    match filter.search {
+        Some(ref query) => {
+            // TODO precompute this on REQ and stop doing this for every event
+            let query = query.nfkc().collect::<String>().to_lowercase();
+            let mut terms = query.split_whitespace();
+            terms.all(|term| normalized_content.contains(term))
+        }
+        None => true,
+    }
+}
+
+fn match_event(event: &nostr_sdk::Event, filters: &Vec<nostr_sdk::Filter>) -> bool {
+    let content = searchnos::index::text::extract_text(&event)
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase(); // TODO precompute this on EVENT and stop doing this for every filter
+
+    filters
+        .iter()
+        .any(|filter| filter.match_event(event) && match_search(&content, filter))
+}
 
 async fn websocket(
     socket: WebSocket,
@@ -120,10 +153,43 @@ async fn websocket(
     );
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
-    let join_handles = Arc::new(Mutex::new(HashMap::<String, JoinHandle<()>>::new()));
+    let subscriptions = Arc::new(Mutex::new(HashMap::<
+        nostr_sdk::SubscriptionId,
+        Vec<nostr_sdk::Filter>,
+    >::new()));
 
     // spawn pinger
     let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
+
+    // span searcher
+    tokio::spawn({
+        let mut rx = state.tx.subscribe();
+        let subscriptions = subscriptions.clone();
+        let sender = sender.clone();
+        async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        for (subscription_id, filters) in subscriptions.lock().await.iter() {
+                            if match_event(&event, filters) {
+                                let relay_msg =
+                                    RelayMessage::new_event(subscription_id.clone(), event.clone());
+                                sender
+                                    .lock()
+                                    .await
+                                    .send(Message::Text(relay_msg.as_json()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("{} error receiving event: {}", addr, e);
+                    }
+                }
+            }
+        }
+    });
 
     tokio::spawn(async move {
         loop {
@@ -132,7 +198,7 @@ async fn websocket(
                     match ws_next {
                         Some(Ok(msg)) => {
                             let sender = sender.clone();
-                            let res = process_message(state.clone(), sender.clone(), join_handles.clone(), addr, msg, is_admin_connection).await;
+                            let res = process_message(state.clone(), sender.clone(), subscriptions.clone(), addr, msg, is_admin_connection).await;
                             if let Err(e) = res {
                                 log::warn!("{} error processing message: {}", addr, e);
                                 let res = send_notice(sender, &format!("Error: {}", e)).await;
@@ -147,11 +213,6 @@ async fn websocket(
                         }
                         None => {
                             log::info!("{} websocket connection closed", addr);
-
-                            // abort all ongoing tasks
-                            for join_handle in join_handles.lock().await.values() {
-                                join_handle.abort();
-                            }
                             pinger_handle.abort();
                             log::info!("{} disconnected", addr);
                             return;
@@ -307,6 +368,14 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info).unwrap();
 
+    let (tx, mut rx) = tokio::sync::broadcast::channel(32);
+    tokio::spawn(async move {
+        loop {
+            let _event = rx.recv().await;
+            // just ignore the event
+        }
+    });
+
     let app_state = Arc::new(AppState {
         relay_info,
         es_client,
@@ -318,6 +387,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         ping_interval: Duration::from_secs(args.ping_interval),
         index_ttl_days: args.index_ttl_days,
         index_allow_future_days: args.index_allow_future_days,
+        tx,
     });
 
     if args.index_ttl_days.is_some() {
