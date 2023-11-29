@@ -218,8 +218,6 @@ async fn websocket(
             }
             None => {
                 log::info!("{} websocket connection closed", addr);
-                pinger_handle.abort();
-                log::info!("{} disconnected", addr);
                 break;
             }
         }
@@ -228,6 +226,7 @@ async fn websocket(
     // abort searcher and pinger
     searcher_handle.abort();
     pinger_handle.abort();
+    log::info!("{} disconnected", addr);
 }
 
 async fn ping() -> impl IntoResponse {
