@@ -415,8 +415,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .unwrap();
+        .await?;
 
     Ok(())
 }
