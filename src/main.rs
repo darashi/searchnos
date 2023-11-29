@@ -162,7 +162,7 @@ async fn websocket(
     let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
 
     // span searcher
-    tokio::spawn({
+    let searcher_handle = tokio::spawn({
         let mut rx = state.tx.subscribe();
         let subscriptions = subscriptions.clone();
         let sender = sender.clone();
@@ -191,37 +191,43 @@ async fn websocket(
         }
     });
 
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                ws_next = receiver.next() => {
-                    match ws_next {
-                        Some(Ok(msg)) => {
-                            let sender = sender.clone();
-                            let res = process_message(state.clone(), sender.clone(), subscriptions.clone(), addr, msg, is_admin_connection).await;
-                            if let Err(e) = res {
-                                log::warn!("{} error processing message: {}", addr, e);
-                                let res = send_notice(sender, &format!("Error: {}", e)).await;
-                                if let Err(e) = res {
-                                    log::error!("{} error sending notice: {}", addr, e);
-                                    return;
-                                }
-                            }
-                        }
-                        Some(Err(e)) => {
-                            log::warn!("{} error receiving message: {}", addr, e);
-                        }
-                        None => {
-                            log::info!("{} websocket connection closed", addr);
-                            pinger_handle.abort();
-                            log::info!("{} disconnected", addr);
-                            return;
-                        }
+    loop {
+        match receiver.next().await {
+            Some(Ok(msg)) => {
+                let sender = sender.clone();
+                let res = process_message(
+                    state.clone(),
+                    sender.clone(),
+                    subscriptions.clone(),
+                    addr,
+                    msg,
+                    is_admin_connection,
+                )
+                .await;
+                if let Err(e) = res {
+                    log::warn!("{} error processing message: {}", addr, e);
+                    let res = send_notice(sender, &format!("Error: {}", e)).await;
+                    if let Err(e) = res {
+                        log::error!("{} error sending notice: {}", addr, e);
+                        break;
                     }
                 }
             }
+            Some(Err(e)) => {
+                log::warn!("{} error receiving message: {}", addr, e);
+            }
+            None => {
+                log::info!("{} websocket connection closed", addr);
+                pinger_handle.abort();
+                log::info!("{} disconnected", addr);
+                break;
+            }
         }
-    });
+    }
+
+    // abort searcher and pinger
+    searcher_handle.abort();
+    pinger_handle.abort();
 }
 
 async fn ping() -> impl IntoResponse {
