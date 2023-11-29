@@ -90,9 +90,6 @@ pub async fn handle_req(
         ));
     }
 
-    // expire old subscription if exists
-    stop_subscription(subscriptions.clone(), subscription_id).await;
-
     // check filter length
     if filters.len() > state.max_filters {
         return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
@@ -122,20 +119,13 @@ pub async fn handle_req(
     Ok(())
 }
 
-async fn stop_subscription(
-    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
-    subscription_id: &SubscriptionId,
-) {
-    subscriptions.lock().await.remove(subscription_id);
-}
-
 pub async fn handle_close(
     subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
     addr: SocketAddr,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
     log::info!("{} CLOSE {:?}", addr, subscription_id.to_string());
-    stop_subscription(subscriptions, &subscription_id).await;
+    subscriptions.lock().await.remove(subscription_id);
 
     Ok(())
 }
