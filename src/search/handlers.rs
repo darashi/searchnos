@@ -82,12 +82,14 @@ pub async fn handle_req(
         filters
     );
 
-    let num_ongoing_subscriptions = subscriptions.lock().await.len();
-    if num_ongoing_subscriptions + 1 > state.max_subscriptions {
-        return Err(anyhow::anyhow!(
-            "too many ongoing subscriptions: {}",
-            num_ongoing_subscriptions
-        ));
+    if !subscriptions.lock().await.contains_key(subscription_id) {
+        let num_ongoing_subscriptions = subscriptions.lock().await.len();
+        if num_ongoing_subscriptions + 1 > state.max_subscriptions {
+            return Err(anyhow::anyhow!(
+                "too many ongoing subscriptions: {}",
+                num_ongoing_subscriptions
+            ));
+        }
     }
 
     // check filter length
