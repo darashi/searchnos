@@ -133,7 +133,7 @@ impl ElasticsearchQuery {
         }
 
         for (tag_name, values) in tags {
-            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), &values);
+            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), values);
             must_conditinos.push(tag_condition);
         }
 
