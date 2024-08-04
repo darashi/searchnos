@@ -1,4 +1,4 @@
-FROM docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+FROM docker.elastic.co/elasticsearch/elasticsearch:8.14.3
 
 RUN elasticsearch-plugin install analysis-icu
 
