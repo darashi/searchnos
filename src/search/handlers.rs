@@ -111,7 +111,7 @@ pub async fn handle_req(
         )
         .await?;
     }
-    send_eose(sender.clone(), &subscription_id).await?;
+    send_eose(sender.clone(), subscription_id).await?;
 
     subscriptions
         .lock()
