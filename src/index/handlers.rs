@@ -103,7 +103,11 @@ async fn delete_replaceable_event(
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        return Err(anyhow::anyhow!("failed to delete; received {}, {}", status_code, body).into());
+        return Err(anyhow::anyhow!(
+            "failed to delete; received {}, {}",
+            status_code,
+            body
+        ));
     }
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
@@ -171,7 +175,11 @@ async fn delete_parameterized_replaceable_event(
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        return Err(anyhow::anyhow!("failed to delete; received {}, {}", status_code, body).into());
+        return Err(anyhow::anyhow!(
+            "failed to delete; received {}, {}",
+            status_code,
+            body
+        ));
     }
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
