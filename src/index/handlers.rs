@@ -119,7 +119,7 @@ async fn delete_replaceable_event(
     Ok(())
 }
 
-fn extract_identifier_tag(tags: &Vec<Tag>) -> String {
+fn extract_identifier_tag(tags: &[Tag]) -> String {
     tags.iter()
         .find_map(|tag| {
             if let Some(TagStandard::Identifier(tag)) = tag.as_standardized() {
@@ -359,22 +359,22 @@ mod tests {
     #[test]
     fn test_identifier_tag() {
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::identifier("hello")]),
+            extract_identifier_tag(&[Tag::identifier("hello")]),
             "hello".to_string()
         );
 
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::identifier("foo"), Tag::identifier("bar")]),
+            extract_identifier_tag(&[Tag::identifier("foo"), Tag::identifier("bar")]),
             "foo".to_string()
         );
 
-        assert_eq!(extract_identifier_tag(&vec![]), "".to_string());
+        assert_eq!(extract_identifier_tag(&[]), "".to_string());
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::identifier("")]),
+            extract_identifier_tag(&[Tag::identifier("")]),
             "".to_string()
         );
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::hashtag("hello")]),
+            extract_identifier_tag(&[Tag::hashtag("hello")]),
             "".to_string()
         );
     }
