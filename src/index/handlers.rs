@@ -52,25 +52,18 @@ fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> 
 }
 
 fn is_replaceable_event(event: &Event) -> bool {
-    match event.kind {
-        Kind::Replaceable(_) => true,
-        Kind::Metadata | Kind::ContactList | Kind::ChannelMetadata => true,
-        _ => false,
-    }
+    matches!(
+        event.kind,
+        Kind::Replaceable(_) | Kind::Metadata | Kind::ContactList | Kind::ChannelMetadata
+    )
 }
 
 fn is_ephemeral_event(event: &Event) -> bool {
-    match event.kind {
-        Kind::Ephemeral(_) => true,
-        _ => false,
-    }
+    matches!(event.kind, Kind::Ephemeral(_))
 }
 
 fn is_parameterized_replaceable_event(event: &Event) -> bool {
-    match event.kind {
-        Kind::ParameterizedReplaceable(_) => true,
-        _ => false,
-    }
+    matches!(event.kind, Kind::ParameterizedReplaceable(_))
 }
 
 async fn delete_replaceable_event(
