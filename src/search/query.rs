@@ -179,11 +179,11 @@ impl ElasticsearchQuery {
     pub async fn execute(
         &self,
         es_client: &Elasticsearch,
-        index_name: &String,
+        index_name: &str,
         cursor: Option<DateTime<Utc>>,
     ) -> anyhow::Result<(Vec<Event>, Option<DateTime<Utc>>)> {
         let search_response = es_client
-            .search(SearchParts::Index(&[index_name.as_str()]))
+            .search(SearchParts::Index(&[index_name]))
             .body(&self.query)
             .sort(&self.sort)
             .size(self.size)
