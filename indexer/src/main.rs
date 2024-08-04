@@ -1,4 +1,3 @@
-use env_logger;
 use log::info;
 use nostr_sdk::prelude::*;
 use std::env;
