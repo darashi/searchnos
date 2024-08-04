@@ -58,10 +58,7 @@ where
     if conds.is_empty() {
         return None;
     }
-    let conds: Vec<String> = conds
-        .into_iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>();
+    let conds: Vec<String> = conds.iter().map(|id| id.to_string()).collect::<Vec<_>>();
     Some(json!({
         "terms": {
             field: conds
