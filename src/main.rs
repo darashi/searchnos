@@ -129,7 +129,7 @@ fn match_search(normalized_content: &str, filter: &nostr_sdk::Filter) -> bool {
     }
 }
 
-fn match_event(event: &nostr_sdk::Event, filters: &Vec<nostr_sdk::Filter>) -> bool {
+fn match_event(event: &nostr_sdk::Event, filters: &[nostr_sdk::Filter]) -> bool {
     let content = searchnos::index::text::extract_text(event)
         .nfkc()
         .collect::<String>()
