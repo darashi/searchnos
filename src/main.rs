@@ -16,7 +16,6 @@ use elasticsearch::{
     },
     Elasticsearch,
 };
-use env_logger;
 use futures::{sink::SinkExt, stream::StreamExt};
 use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage};
 use nostr_sdk::JsonUtil;
