@@ -7,6 +7,7 @@ use log::{error, info, warn};
 use nostr_sdk::prelude::*;
 use nostr_sdk::Event;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -257,7 +258,7 @@ async fn handle_deletion_event(
         .tags
         .iter()
         .filter_map(|tag| match tag {
-            Tag::Event(e, _, _) => Some(e.to_hex()),
+            Tag::Event { event_id, .. } => Some(event_id.to_hex()),
             _ => None,
         })
         .collect::<Vec<String>>();
@@ -308,7 +309,7 @@ async fn send_ok(
     status: bool,
     message: &str,
 ) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::new_ok(event.id, status, message);
+    let relay_msg = RelayMessage::ok(event.id, status, message);
     sender
         .lock()
         .await

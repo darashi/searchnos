@@ -18,7 +18,7 @@ async fn send_events(
     events: Vec<nostr_sdk::Event>,
 ) -> anyhow::Result<()> {
     for event in events {
-        let relay_msg = RelayMessage::new_event(subscription_id.clone(), event);
+        let relay_msg = RelayMessage::event(subscription_id.clone(), event);
         sender
             .lock()
             .await
@@ -32,7 +32,7 @@ async fn send_eose(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::new_eose(subscription_id.clone());
+    let relay_msg = RelayMessage::eose(subscription_id.clone());
     sender
         .lock()
         .await

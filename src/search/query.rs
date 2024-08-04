@@ -35,7 +35,7 @@ fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
     })
 }
 
-fn gen_exact_search_query<T>(field: &str, conds: HashSet<T>) -> Option<Value>
+fn gen_exact_search_query<T>(field: &str, conds: HashSet<T>) -> Value
 where
     T: fmt::Display,
 {
@@ -44,15 +44,11 @@ where
         .map(|id| id.to_string())
         .collect::<Vec<_>>();
 
-    if ids.is_empty() {
-        None
-    } else {
-        Some(json!({
-            "terms": {
-                field: ids
-            }
-        }))
-    }
+    json!({
+        "terms": {
+            field: ids
+        }
+    })
 }
 
 fn gen_tag_query<T>(field: &str, conds: &HashSet<T>) -> Option<Value>
@@ -106,20 +102,22 @@ impl ElasticsearchQuery {
             (None, None) => None,
         };
 
-        let kinds_condition = if filter.kinds.is_empty() {
-            None
-        } else {
-            Some(json!({
+        let kinds_condition = filter.kinds.map(|kinds| {
+            json!({
                 "terms": {
-                    "event.kind": filter.kinds
+                    "event.kind": kinds
                 }
-            }))
-        };
+            })
+        });
 
-        let ids_condition = gen_exact_search_query("event.id", filter.ids);
-        let authors_condition = gen_exact_search_query("event.pubkey", filter.authors);
+        let ids_condition = filter
+            .ids
+            .map(|ids| gen_exact_search_query("event.id", ids));
+        let authors_condition = filter
+            .authors
+            .map(|authors| gen_exact_search_query("event.pubkey", authors));
 
-        let mut must_conditinos = vec![
+        let mut must_conditinos: Vec<Option<Value>> = vec![
             ids_condition,
             authors_condition,
             kinds_condition,

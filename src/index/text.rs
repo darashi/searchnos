@@ -35,7 +35,7 @@ mod tests {
         let event = nostr_sdk::EventBuilder::new(
             Kind::TextNote,
             "hello world",
-            &[
+            [
                 Tag::Identifier("foo".to_string()),
                 Tag::Hashtag("bar".to_string()),
                 Tag::Title("title".to_string()),
@@ -54,7 +54,7 @@ mod tests {
         let event = nostr_sdk::EventBuilder::new(
             Kind::LongFormTextNote,
             "# hello\n\nworld",
-            &[
+            [
                 Tag::Identifier("foo".to_string()),
                 Tag::Hashtag("bar".to_string()),
                 Tag::Title("title".to_string()),

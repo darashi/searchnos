@@ -91,7 +91,7 @@ async fn send_notice(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     msg: &str,
 ) -> anyhow::Result<()> {
-    let notice = RelayMessage::new_notice(msg);
+    let notice = RelayMessage::notice(msg);
     sender
         .lock()
         .await
@@ -173,7 +173,7 @@ async fn websocket(
                         for (subscription_id, filters) in subscriptions.lock().await.iter() {
                             if match_event(&event, filters) {
                                 let relay_msg =
-                                    RelayMessage::new_event(subscription_id.clone(), event.clone());
+                                    RelayMessage::event(subscription_id.clone(), event.clone());
                                 sender
                                     .lock()
                                     .await
@@ -468,7 +468,7 @@ mod tests {
         let keys = nostr_sdk::Keys::generate();
         let client = nostr_sdk::Client::new(&keys);
         client
-            .add_relay(format!("ws://localhost:{}", args.port), None)
+            .add_relay(format!("ws://localhost:{}", args.port))
             .await
             .unwrap();
         client.connect().await;

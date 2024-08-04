@@ -3,6 +3,7 @@ use elasticsearch::{
 };
 use log::info;
 use nostr_sdk::prelude::*;
+use serde_json::json;
 
 pub async fn put_pipeline(
     es_client: &Elasticsearch,
