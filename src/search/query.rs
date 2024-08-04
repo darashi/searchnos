@@ -29,7 +29,7 @@ fn gen_query(must_conditions: Vec<Option<Value>>) -> Value {
         "query": {
             "bool": {
                 // exclude None
-                "must": must_conditions.into_iter().filter_map(|c| c).collect::<Vec<_>>()
+                "must": must_conditions.into_iter().flatten().collect::<Vec<_>>()
             }
         }
     })
