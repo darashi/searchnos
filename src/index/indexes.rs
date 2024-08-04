@@ -8,7 +8,10 @@ pub fn index_name_for_event(prefix: &str, event: &Event) -> anyhow::Result<Strin
     if let Some(dt) = dt.single() {
         Ok(format!("{}-{}", prefix, dt.format(DATE_FORMAT)))
     } else {
-        Err(anyhow::anyhow!("failed to parse date: {}", event.created_at).into())
+        Err(anyhow::anyhow!(
+            "failed to parse date: {}",
+            event.created_at
+        ))
     }
 }
 
@@ -47,31 +50,13 @@ mod tests {
     #[test]
     fn test_can_exist() {
         let current_time = chrono::DateTime::from_str("2023-03-20T00:00:00Z").unwrap();
-        assert_eq!(
-            can_exist("nostr-2023.03.22", &current_time, Some(2), 1).unwrap(),
-            false
-        );
-        assert_eq!(
-            can_exist("nostr-2023.03.21", &current_time, Some(2), 1).unwrap(),
-            true
-        );
-        assert_eq!(
-            can_exist("nostr-2023.03.20", &current_time, Some(2), 1).unwrap(),
-            true
-        );
-        assert_eq!(
-            can_exist("nostr-2023.03.19", &current_time, Some(2), 1).unwrap(),
-            true
-        );
-        assert_eq!(
-            can_exist("nostr-2023.03.18", &current_time, Some(2), 1).unwrap(),
-            false
-        );
+        assert!(!can_exist("nostr-2023.03.22", &current_time, Some(2), 1).unwrap());
+        assert!(!can_exist("nostr-2023.03.21", &current_time, Some(2), 1).unwrap());
+        assert!(can_exist("nostr-2023.03.20", &current_time, Some(2), 1).unwrap());
+        assert!(can_exist("nostr-2023.03.19", &current_time, Some(2), 1).unwrap());
+        assert!(!can_exist("nostr-2023.03.18", &current_time, Some(2), 1).unwrap());
 
         // ttl is not specified
-        assert_eq!(
-            can_exist("nostr-2023.03.18", &current_time, None, 1).unwrap(),
-            true
-        );
+        assert!(can_exist("nostr-2023.03.18", &current_time, None, 1).unwrap());
     }
 }
