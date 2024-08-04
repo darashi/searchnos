@@ -23,7 +23,7 @@ use searchnos::app_state::AppState;
 use searchnos::index::handlers::handle_event;
 use searchnos::index::purge::spawn_index_purger;
 use searchnos::index::schema::{create_index_template, put_pipeline};
-use searchnos::search::handlers::{handle_close, handle_req};
+use searchnos::search::handlers::{handle_close, handle_req, ClosedError};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -95,6 +95,20 @@ async fn send_notice(
         .lock()
         .await
         .send(Message::Text(notice.as_json()))
+        .await?;
+    Ok(())
+}
+
+async fn send_closed(
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    subscription_id: nostr_sdk::SubscriptionId,
+    msg: &str,
+) -> anyhow::Result<()> {
+    let closed = RelayMessage::closed(subscription_id, msg);
+    sender
+        .lock()
+        .await
+        .send(Message::Text(closed.as_json()))
         .await?;
     Ok(())
 }
@@ -205,10 +219,19 @@ async fn websocket(
                 .await;
                 if let Err(e) = res {
                     log::warn!("{} error processing message: {}", addr, e);
-                    let res = send_notice(sender, &format!("Error: {}", e)).await;
-                    if let Err(e) = res {
-                        log::error!("{} error sending notice: {}", addr, e);
-                        break;
+                    if let Some(e) = e.downcast_ref::<ClosedError>() {
+                        let res =
+                            send_closed(sender, e.subscription_id.clone(), &e.to_string()).await;
+                        if let Err(e) = res {
+                            log::error!("{} error sending closed: {}", addr, e);
+                            break;
+                        }
+                    } else {
+                        let res = send_notice(sender, &format!("Error: {}", e)).await;
+                        if let Err(e) = res {
+                            log::error!("{} error sending notice: {}", addr, e);
+                            break;
+                        }
                     }
                 }
             }

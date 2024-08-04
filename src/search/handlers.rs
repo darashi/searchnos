@@ -1,3 +1,4 @@
+use anyhow::bail;
 use axum::extract::ws::{Message, WebSocket};
 use chrono::{DateTime, Utc};
 use futures::sink::SinkExt;
@@ -67,6 +68,27 @@ async fn query_then_send(
     Ok(new_cursor)
 }
 
+#[derive(thiserror::Error, Debug)]
+pub struct ClosedError {
+    pub subscription_id: SubscriptionId,
+    message: String,
+}
+
+impl std::fmt::Display for ClosedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl ClosedError {
+    fn new(subscription_id: SubscriptionId, message: String) -> Self {
+        Self {
+            subscription_id,
+            message,
+        }
+    }
+}
+
 pub async fn handle_req(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
@@ -85,16 +107,22 @@ pub async fn handle_req(
     if !subscriptions.lock().await.contains_key(subscription_id) {
         let num_ongoing_subscriptions = subscriptions.lock().await.len();
         if num_ongoing_subscriptions + 1 > state.max_subscriptions {
-            return Err(anyhow::anyhow!(
-                "too many ongoing subscriptions: {}",
-                num_ongoing_subscriptions
+            bail!(ClosedError::new(
+                subscription_id.clone(),
+                format!(
+                    "error: too many ongoing subscriptions: {}",
+                    num_ongoing_subscriptions
+                )
             ));
         }
     }
 
     // check filter length
     if filters.len() > state.max_filters {
-        return Err(anyhow::anyhow!("too many filters: {}", filters.len()));
+        bail!(ClosedError::new(
+            subscription_id.clone(),
+            format!("error: too many filters: {}", filters.len())
+        ));
     }
 
     // do the first search

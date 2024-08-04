@@ -20,6 +20,7 @@ anyhow = "1.0.70"
 rand = "0.8.5"
 clap = { version = "4.4.8", features = ["derive", "env"] }
 unicode-normalization = "0.1.22"
+thiserror = "1.0.63"
 
 [workspace]
 
