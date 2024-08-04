@@ -432,12 +432,7 @@ mod tests {
     use super::*;
 
     fn find_available_port() -> Option<u16> {
-        (32768..65535).find(
-            |port| match TcpListener::bind(format!("127.0.0.1:{}", port)) {
-                Ok(_) => true,
-                Err(_) => false,
-            },
-        )
+        (32768..65535).find(|port| TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok())
     }
 
     #[tokio::test]
