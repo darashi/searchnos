@@ -329,13 +329,13 @@ pub async fn handle_event(
 
     if !is_admin_connection {
         log::info!("{} blocked EVENT {}", addr, event.as_json());
-        return send_ok(sender, &event, false, "blocked: EVENT not allowed").await;
+        return send_ok(sender, event, false, "blocked: EVENT not allowed").await;
     }
 
-    match handle_update(state, &event).await {
+    match handle_update(state, event).await {
         Ok(_) => {
             log::info!("{} accepted EVENT {}", addr, event.as_json());
-            return send_ok(sender, &event, true, "").await;
+            send_ok(sender, event, true, "").await
         }
         Err(e) => {
             log::error!(
@@ -344,7 +344,7 @@ pub async fn handle_event(
                 event.as_json(),
                 e
             );
-            return send_ok(sender, &event, false, "error: failed to handle EVENT").await;
+            send_ok(sender, event, false, "error: failed to handle EVENT").await
         }
     }
 }
