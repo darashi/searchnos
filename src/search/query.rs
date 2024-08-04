@@ -146,7 +146,7 @@ impl ElasticsearchQuery {
                 // treat `limit` as `size` and fetch in reverse chronological order
                 let size = filter
                     .limit
-                    .and_then(|l| Some(std::cmp::min(l, MAX_LIMIT)))
+                    .map(|l| std::cmp::min(l, MAX_LIMIT))
                     .unwrap_or(DEFAULT_LIMIT) as i64;
 
                 ElasticsearchQuery {
