@@ -220,7 +220,7 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
 
     let doc = Document {
         event: event.clone(),
-        text: extract_text(&event),
+        text: extract_text(event),
         tags: convert_tags(&event.tags),
         identifier_tag: extract_identifier_tag(&event.tags),
     };
