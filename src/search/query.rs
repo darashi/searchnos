@@ -208,7 +208,7 @@ impl ElasticsearchQuery {
         let response_body = search_response.json::<Value>().await?;
 
         let mut notes = vec![];
-        let mut latest_timestamp: Option<DateTime<Utc>> = cursor.clone();
+        let mut latest_timestamp = cursor;
         for hit in response_body["hits"]["hits"]
             .as_array()
             .unwrap_or(&vec![])
