@@ -4,7 +4,7 @@ use nostr_sdk::Event;
 const DATE_FORMAT: &str = "%Y.%m.%d";
 
 pub fn index_name_for_event(prefix: &str, event: &Event) -> anyhow::Result<String> {
-    let dt = chrono::Utc.timestamp_opt(event.created_at.as_i64(), 0);
+    let dt = chrono::Utc.timestamp_opt(event.created_at.as_u64() as i64, 0);
     if let Some(dt) = dt.single() {
         Ok(format!("{}-{}", prefix, dt.format(DATE_FORMAT).to_string()))
     } else {

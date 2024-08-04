@@ -125,7 +125,7 @@ async fn delete_replaceable_event(
 fn extract_identifier_tag(tags: &Vec<Tag>) -> String {
     tags.iter()
         .find_map(|tag| {
-            if let Tag::Identifier(tag) = tag {
+            if let Some(TagStandard::Identifier(tag)) = tag.as_standardized() {
                 Some(tag.to_string())
             } else {
                 None
@@ -257,8 +257,8 @@ async fn handle_deletion_event(
     let ids_to_delete = deletion_event
         .tags
         .iter()
-        .filter_map(|tag| match tag {
-            Tag::Event { event_id, .. } => Some(event_id.to_hex()),
+        .filter_map(|tag| match tag.as_standardized() {
+            Some(TagStandard::Event { event_id, .. }) => Some(event_id.to_hex()),
             _ => None,
         })
         .collect::<Vec<String>>();
@@ -358,25 +358,22 @@ mod tests {
     #[test]
     fn test_identifier_tag() {
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::Identifier("hello".to_string())]),
+            extract_identifier_tag(&vec![Tag::identifier("hello")]),
             "hello".to_string()
         );
 
         assert_eq!(
-            extract_identifier_tag(&vec![
-                Tag::Identifier("foo".to_string()),
-                Tag::Identifier("bar".to_string())
-            ]),
+            extract_identifier_tag(&vec![Tag::identifier("foo"), Tag::identifier("bar")]),
             "foo".to_string()
         );
 
         assert_eq!(extract_identifier_tag(&vec![]), "".to_string());
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::Identifier("".to_string())]),
+            extract_identifier_tag(&vec![Tag::identifier("")]),
             "".to_string()
         );
         assert_eq!(
-            extract_identifier_tag(&vec![Tag::Hashtag("hello".to_string())]),
+            extract_identifier_tag(&vec![Tag::hashtag("hello")]),
             "".to_string()
         );
     }

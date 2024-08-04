@@ -11,11 +11,13 @@ pub fn extract_text(event: &Event) -> String {
         }
         Kind::LongFormTextNote => {
             let mut items = vec![event.content.clone()];
-            items.extend(event.tags.iter().filter_map(|tag| match tag {
-                nostr_sdk::Tag::Title(title) => Some(title.clone()),
-                nostr_sdk::Tag::Summary(summary) => Some(summary.clone()),
-                _ => None,
-            }));
+            for tag in event.tags().iter() {
+                match tag.as_standardized() {
+                    Some(TagStandard::Title(title)) => items.push(title.to_owned()),
+                    Some(TagStandard::Summary(summary)) => items.push(summary.to_owned()),
+                    _ => {}
+                };
+            }
             items.join(" ")
         }
 
@@ -25,7 +27,7 @@ pub fn extract_text(event: &Event) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nostr_sdk::{Keys, Kind, Tag};
+    use nostr_sdk::{Keys, Kind, Tag, TagStandard};
 
     use crate::index::text::extract_text;
 
@@ -36,10 +38,10 @@ mod tests {
             Kind::TextNote,
             "hello world",
             [
-                Tag::Identifier("foo".to_string()),
-                Tag::Hashtag("bar".to_string()),
-                Tag::Title("title".to_string()),
-                Tag::Summary("summary".to_string()),
+                Tag::identifier("foo"),
+                Tag::hashtag("bar"),
+                Tag::from_standardized(TagStandard::Title("title".to_string())),
+                Tag::from_standardized(TagStandard::Summary("summary".to_string())),
             ],
         )
         .to_event(&keys)
@@ -55,10 +57,10 @@ mod tests {
             Kind::LongFormTextNote,
             "# hello\n\nworld",
             [
-                Tag::Identifier("foo".to_string()),
-                Tag::Hashtag("bar".to_string()),
-                Tag::Title("title".to_string()),
-                Tag::Summary("summary".to_string()),
+                Tag::identifier("foo"),
+                Tag::hashtag("bar"),
+                Tag::from_standardized(TagStandard::Title("title".to_string())),
+                Tag::from_standardized(TagStandard::Summary("summary".to_string())),
             ],
         )
         .to_event(&keys)
