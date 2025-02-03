@@ -1,6 +1,6 @@
 # Searchnos: a NIP-50 Relay (Search Notes and Other Stuff)
 
-This is a relay-like bridge server that provides a Nostr full-text search capability by using Elasticsearch as a backend. It emulates real-time search by polling Elasticsearch.
+This is a relay server that provides a Nostr full-text search capability by using Elasticsearch as a backend.
 
 Searchnos works like a relay, with an exception; Searchnos does not accept `EVENT` messages from regular connections. When opening a WebSocket connection, if a pre-configured API key is specified as `?api_key=foo` query parameter, the connection is treated specially as an administrative connection. Searchnos only receives `EVENT`s from such connections.
 
