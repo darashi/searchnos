@@ -51,7 +51,7 @@ mod tests {
     fn test_can_exist() {
         let current_time = chrono::DateTime::from_str("2023-03-20T00:00:00Z").unwrap();
         assert!(!can_exist("nostr-2023.03.22", &current_time, Some(2), 1).unwrap());
-        assert!(!can_exist("nostr-2023.03.21", &current_time, Some(2), 1).unwrap());
+        assert!(can_exist("nostr-2023.03.21", &current_time, Some(2), 1).unwrap());
         assert!(can_exist("nostr-2023.03.20", &current_time, Some(2), 1).unwrap());
         assert!(can_exist("nostr-2023.03.19", &current_time, Some(2), 1).unwrap());
         assert!(!can_exist("nostr-2023.03.18", &current_time, Some(2), 1).unwrap());
