@@ -1,7 +1,7 @@
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRequestParts, Query};
 use axum::http::request::Parts;
-use axum::{async_trait, Extension};
+use axum::Extension;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::StatusCode,
@@ -48,7 +48,7 @@ async fn process_message(
     match &msg {
         Message::Text(text) => {
             log::info!("{} RECEIVED {}", addr, text);
-            let client_message = nostr_sdk::ClientMessage::from_json(text)?;
+            let client_message = nostr_sdk::ClientMessage::from_json(text.as_bytes())?;
             match client_message {
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
@@ -94,7 +94,7 @@ async fn send_notice(
     sender
         .lock()
         .await
-        .send(Message::Text(notice.as_json()))
+        .send(Message::Text(notice.as_json().into()))
         .await?;
     Ok(())
 }
@@ -108,7 +108,7 @@ async fn send_closed(
     sender
         .lock()
         .await
-        .send(Message::Text(closed.as_json()))
+        .send(Message::Text(closed.as_json().into()))
         .await?;
     Ok(())
 }
@@ -122,7 +122,7 @@ async fn spawn_pinger(
         loop {
             tokio::time::sleep(state.ping_interval).await;
             log::info!("{} sending ping", addr);
-            let res = sender.lock().await.send(Message::Ping(vec![])).await;
+            let res = sender.lock().await.send(Message::Ping(vec![].into())).await;
             if let Err(e) = res {
                 log::warn!("{} error sending ping: {}", addr, e);
                 return;
@@ -190,7 +190,7 @@ async fn websocket(
                                 sender
                                     .lock()
                                     .await
-                                    .send(Message::Text(relay_msg.as_json()))
+                                    .send(Message::Text(relay_msg.as_json().into()))
                                     .await
                                     .unwrap();
                             }
@@ -259,7 +259,6 @@ async fn ping() -> impl IntoResponse {
 
 struct ReturnRelayInfoExtractor {}
 
-#[async_trait]
 impl<S> FromRequestParts<S> for ReturnRelayInfoExtractor
 where
     S: Send + Sync,
@@ -440,9 +439,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     log::info!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -476,8 +478,8 @@ mod tests {
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
         let join_handle = tokio::spawn(async move {
-            axum::Server::bind(&addr)
-                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .unwrap();
         });

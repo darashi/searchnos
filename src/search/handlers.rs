@@ -23,7 +23,7 @@ async fn send_events(
         sender
             .lock()
             .await
-            .send(Message::Text(relay_msg.as_json()))
+            .send(Message::Text(relay_msg.as_json().into()))
             .await?;
     }
 
@@ -37,7 +37,7 @@ async fn send_eose(
     sender
         .lock()
         .await
-        .send(Message::Text(relay_msg.as_json()))
+        .send(Message::Text(relay_msg.as_json().into()))
         .await?;
     Ok(())
 }
