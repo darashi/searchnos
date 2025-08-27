@@ -25,11 +25,11 @@ struct Document {
     identifier_tag: String,
 }
 
-fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> {
+fn convert_tags(tags: &[nostr_sdk::Tag]) -> HashMap<String, HashSet<String>> {
     let mut tag: HashMap<String, HashSet<String>> = HashMap::new();
 
     for t in tags {
-        let t = t.as_vec();
+        let t = t.as_slice();
         let mut it = t.iter();
         let tag_kind = it.next();
         let first_tag_value = it.next();
@@ -49,21 +49,6 @@ fn convert_tags(tags: &Vec<nostr_sdk::Tag>) -> HashMap<String, HashSet<String>> 
     }
 
     tag
-}
-
-fn is_replaceable_event(event: &Event) -> bool {
-    matches!(
-        event.kind,
-        Kind::Replaceable(_) | Kind::Metadata | Kind::ContactList | Kind::ChannelMetadata
-    )
-}
-
-fn is_ephemeral_event(event: &Event) -> bool {
-    matches!(event.kind, Kind::Ephemeral(_))
-}
-
-fn is_parameterized_replaceable_event(event: &Event) -> bool {
-    matches!(event.kind, Kind::ParameterizedReplaceable(_))
 }
 
 async fn delete_replaceable_event(
@@ -112,7 +97,7 @@ async fn delete_replaceable_event(
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
         "replaceable event (kind {}): deleted {} event(s) of for pubkey {}",
-        event.kind.as_u32(),
+        event.kind.as_u16(),
         response_body["deleted"],
         event.pubkey,
     );
@@ -136,7 +121,7 @@ async fn delete_parameterized_replaceable_event(
     alias_name: &str,
     event: &Event,
 ) -> anyhow::Result<()> {
-    let identifier_tag = extract_identifier_tag(&event.tags);
+    let identifier_tag = extract_identifier_tag(event.tags.as_ref());
     let res = es_client
         .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
         .body(json!({
@@ -184,7 +169,7 @@ async fn delete_parameterized_replaceable_event(
     let response_body = res.json::<serde_json::Value>().await?;
     info!(
         "parameterized replaceable event (kind {}): deleted {} event(s) of for pubkey {}, identifier_tag {}",
-        event.kind.as_u32(),
+        event.kind.as_u16(),
         response_body["deleted"],
         event.pubkey,
         identifier_tag,
@@ -198,7 +183,7 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
 
     state.tx.send(event.clone())?;
 
-    if is_ephemeral_event(event) {
+    if event.kind.is_ephemeral() {
         return Ok(());
     }
 
@@ -221,8 +206,8 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
     let doc = Document {
         event: event.clone(),
         text: extract_text(event),
-        tags: convert_tags(&event.tags),
-        identifier_tag: extract_identifier_tag(&event.tags),
+        tags: convert_tags(event.tags.as_ref()),
+        identifier_tag: extract_identifier_tag(event.tags.as_ref()),
     };
     let res = es_client
         .index(IndexParts::IndexId(index_name.as_str(), &id))
@@ -235,10 +220,10 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
         error!("failed to index; received {}, {}", status_code, body);
     }
 
-    if is_replaceable_event(event) {
+    if event.kind.is_replaceable() {
         delete_replaceable_event(es_client, index_alias_name, event).await?;
     }
-    if is_parameterized_replaceable_event(event) {
+    if event.kind.is_addressable() {
         delete_parameterized_replaceable_event(es_client, index_alias_name, event).await?;
     }
     if let Kind::EventDeletion = event.kind {

@@ -52,7 +52,7 @@ async fn process_message(
             match client_message {
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
-                    filters,
+                    filter,
                 } => {
                     handle_req(
                         state,
@@ -60,7 +60,7 @@ async fn process_message(
                         subscriptions,
                         addr,
                         &subscription_id,
-                        filters,
+                        vec![filter.into_owned()],
                     )
                     .await
                 }
@@ -148,9 +148,9 @@ fn match_event(event: &nostr_sdk::Event, filters: &[nostr_sdk::Filter]) -> bool 
         .collect::<String>()
         .to_lowercase(); // TODO precompute this on EVENT and stop doing this for every filter
 
-    filters
-        .iter()
-        .any(|filter| filter.match_event(event) && match_search(&content, filter))
+    filters.iter().any(|filter| {
+        filter.match_event(event, Default::default()) && match_search(&content, filter)
+    })
 }
 
 async fn websocket(
@@ -483,7 +483,7 @@ mod tests {
         });
 
         let keys = nostr_sdk::Keys::generate();
-        let client = nostr_sdk::Client::new(&keys);
+        let client = nostr_sdk::Client::new(keys);
         client
             .add_relay(format!("ws://localhost:{}", args.port))
             .await
@@ -491,12 +491,9 @@ mod tests {
         client.connect().await;
 
         let filter = nostr_sdk::Filter::new().search("nostr").limit(0);
+        let relay_url = format!("ws://localhost:{}", args.port);
         let res = client
-            .get_events_of_with_opts(
-                vec![filter],
-                Some(Duration::from_secs(5)),
-                nostr_sdk::FilterOptions::ExitOnEOSE,
-            )
+            .fetch_events_from([&relay_url], filter, Duration::from_secs(5))
             .await;
         assert!(res.is_ok());
 

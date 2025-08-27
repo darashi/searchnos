@@ -107,12 +107,14 @@ impl ElasticsearchQuery {
             })
         });
 
-        let ids_condition = filter
-            .ids
-            .map(|ids| gen_exact_search_query("event.id", ids));
-        let authors_condition = filter
-            .authors
-            .map(|authors| gen_exact_search_query("event.pubkey", authors));
+        let ids_condition = filter.ids.map(|ids| {
+            let id_set: HashSet<String> = ids.iter().map(|id| id.to_string()).collect();
+            gen_exact_search_query("event.id", id_set)
+        });
+        let authors_condition = filter.authors.map(|authors| {
+            let author_set: HashSet<String> = authors.iter().map(|pk| pk.to_string()).collect();
+            gen_exact_search_query("event.pubkey", author_set)
+        });
 
         let mut must_conditinos: Vec<Option<Value>> = vec![
             ids_condition,
@@ -133,7 +135,10 @@ impl ElasticsearchQuery {
         }
 
         for (tag_name, values) in tags {
-            let tag_condition = gen_tag_query(&format!("tags.{}", tag_name), values);
+            let tag_condition = gen_tag_query(
+                &format!("tags.{}", tag_name),
+                &values.iter().cloned().collect(),
+            );
             must_conditinos.push(tag_condition);
         }
 

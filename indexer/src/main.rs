@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // prepare nostr clients
     let my_keys: Keys = Keys::generate();
-    let src_client = Client::new(&my_keys);
+    let src_client = Client::new(my_keys.clone());
 
     for relay in src_relays.split(',') {
         info!("adding source relay: {}", relay);
@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     src_client.connect().await;
 
-    let dest_client = Client::new(&my_keys);
+    let dest_client = Client::new(my_keys);
     for relay in dest_relays.split(',') {
         info!("adding destination relay: {}", relay);
         dest_client.add_relay(relay).await?;
@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Kind::ChannelMuteUser,
     ]);
 
-    src_client.subscribe(vec![subscription], None).await?;
+    src_client.subscribe(subscription, None).await?;
     info!("ready to receive messages");
 
     loop {
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let RelayPoolNotification::Event { event, .. } = notification {
                 log::info!("received event: {}", event.as_json());
                 // TODO check dates
-                dest_client.send_msg(ClientMessage::event(*event)).await?;
+                dest_client.send_event(&event).await?;
             }
         }
     }
