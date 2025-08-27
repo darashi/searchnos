@@ -318,6 +318,12 @@ pub async fn handle_event(
         return send_ok(sender, event, false, "blocked: EVENT not allowed").await;
     }
 
+    // NIP-70: Check for protected event
+    if event.is_protected() {
+        log::info!("{} protected EVENT (NIP-70) {}", addr, event.as_json());
+        return send_ok(sender, event, false, "blocked: protected event").await;
+    }
+
     match handle_update(state, event).await {
         Ok(_) => {
             log::info!("{} accepted EVENT {}", addr, event.as_json());
@@ -337,7 +343,7 @@ pub async fn handle_event(
 
 #[cfg(test)]
 mod tests {
-    use nostr_sdk::Tag;
+    use nostr_sdk::{EventBuilder, Keys, Tag};
 
     use crate::index::handlers::extract_identifier_tag;
 
