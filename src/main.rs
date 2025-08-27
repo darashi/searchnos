@@ -296,7 +296,7 @@ where
                 .unwrap()
                 .into_response();
 
-            return Err(res);
+            Err(res)
         }
     }
 }

@@ -61,7 +61,7 @@ async fn query_then_send(
     log::info!(
         "{} [{}] sent {} event(s), searched in {} ms",
         addr,
-        subscription_id.to_string(),
+        subscription_id,
         num_hits,
         search_time,
     );
@@ -100,7 +100,7 @@ pub async fn handle_req(
     log::info!(
         "{} [{}] req {:?}",
         addr,
-        subscription_id.to_string(),
+        subscription_id,
         filters
     );
 
