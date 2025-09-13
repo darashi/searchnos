@@ -43,6 +43,7 @@ services:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
       - API_KEY=${API_KEY}
+      - INDEX_TTL_DAYS=${INDEX_TTL_DAYS}
     restart: always
     depends_on:
       es:
