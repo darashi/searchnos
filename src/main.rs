@@ -345,13 +345,21 @@ struct Args {
     #[arg(long, env, default_value_t = 55)]
     ping_interval: u64,
 
-    /// Index TTL in days
-    #[arg(long, env)]
-    index_ttl_days: Option<u64>,
+    /// Daily index TTL in days
+    #[arg(long = "daily-index-ttl", env = "DAILY_INDEX_TTL")]
+    daily_index_ttl: Option<u64>,
 
     /// Maximum number of days in the future to accept events for
     #[arg(long, env, default_value_t = 1)]
     index_allow_future_days: u64,
+
+    /// Comma-separated kinds to index yearly
+    #[arg(long = "yearly-index-kinds", env = "YEARLY_INDEX_KINDS")]
+    yearly_index_kinds: Option<String>,
+
+    /// TTL for yearly indices (years)
+    #[arg(long = "yearly-index-ttl", env = "YEARLY_INDEX_TTL")]
+    yearly_index_ttl: Option<u64>,
 }
 
 async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
@@ -402,6 +410,38 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         }
     });
 
+    // Use YEARLY_INDEX_KINDS/--yearly-index-kinds only (legacy removed)
+    let yearly_index_kinds_raw = args
+        .yearly_index_kinds
+        .clone()
+        .unwrap_or_default();
+
+    let yearly_index_kinds = yearly_index_kinds_raw
+        .as_str()
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                match s.parse::<u16>() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        log::warn!("Invalid YEARLY_INDEX_KINDS entry '{}': {}", s, e);
+                        None
+                    }
+                }
+            }
+        })
+        .collect::<std::collections::HashSet<u16>>();
+
+    if !yearly_index_kinds.is_empty() {
+        log::info!(
+            "Yearly index kinds enabled: {:?}",
+            yearly_index_kinds
+        );
+    }
+
     let app_state = Arc::new(AppState {
         relay_info,
         es_client,
@@ -411,12 +451,14 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         max_filters: args.max_filters,             // TODO include this in relay info
         api_key: args.api_key.to_string(),
         ping_interval: Duration::from_secs(args.ping_interval),
-        index_ttl_days: args.index_ttl_days,
+        daily_index_ttl_days: args.daily_index_ttl,
         index_allow_future_days: args.index_allow_future_days,
+        yearly_index_ttl_years: args.yearly_index_ttl,
+        yearly_index_kinds,
         tx,
     });
 
-    if args.index_ttl_days.is_some() {
+    if args.daily_index_ttl.is_some() {
         spawn_index_purger(app_state.clone()).await;
     } else {
         log::info!("index ttl is disabled");
@@ -471,8 +513,10 @@ mod tests {
             max_subscriptions: 100,
             max_filters: 32,
             ping_interval: 55,
-            index_ttl_days: None,
+            daily_index_ttl: None,
             index_allow_future_days: 1,
+            yearly_index_kinds: None,
+            yearly_index_ttl: None,
         };
         let app = app(&args).await.unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));

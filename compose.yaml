@@ -43,7 +43,9 @@ services:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
       - API_KEY=${API_KEY}
-      - INDEX_TTL_DAYS=${INDEX_TTL_DAYS}
+      - DAILY_INDEX_TTL=${DAILY_INDEX_TTL}
+      - YEARLY_INDEX_KINDS=${YEARLY_INDEX_KINDS}
+      - YEARLY_INDEX_TTL=${YEARLY_INDEX_TTL}
     restart: always
     depends_on:
       es:

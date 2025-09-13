@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::app_state::AppState;
-use crate::index::indexes::{can_exist, index_name_for_event};
+use crate::index::indexes::{can_exist, index_name_for_event_with_policy};
 use crate::index::text::extract_text;
 
 #[derive(Debug, Serialize)]
@@ -178,7 +178,11 @@ async fn delete_parameterized_replaceable_event(
 }
 
 pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Result<()> {
-    let index_name = index_name_for_event(&state.index_name_prefix, event)?;
+    let index_name = index_name_for_event_with_policy(
+        &state.index_name_prefix,
+        event,
+        &state.yearly_index_kinds,
+    )?;
     info!("{} {}", index_name, event.as_json());
 
     state.tx.send(event.clone())?;
@@ -190,8 +194,9 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
     let ok = can_exist(
         &index_name,
         &Utc::now(),
-        state.index_ttl_days,
+        state.daily_index_ttl_days,
         state.index_allow_future_days,
+        state.yearly_index_ttl_years,
     )
     .unwrap_or(false);
     if !ok {

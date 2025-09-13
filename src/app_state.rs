@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use elasticsearch::Elasticsearch;
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct AppState {
@@ -12,7 +13,9 @@ pub struct AppState {
     pub max_filters: usize,
     pub api_key: String,
     pub ping_interval: Duration,
-    pub index_ttl_days: Option<u64>,
+    pub daily_index_ttl_days: Option<u64>,
     pub index_allow_future_days: u64,
+    pub yearly_index_ttl_years: Option<u64>,
+    pub yearly_index_kinds: HashSet<u16>,
     pub tx: tokio::sync::broadcast::Sender<nostr_sdk::Event>,
 }

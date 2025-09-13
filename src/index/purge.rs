@@ -8,8 +8,9 @@ use crate::{app_state::AppState, index::indexes::can_exist};
 
 async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
     log::info!(
-        "Purging indices (TTL={}d)",
-        state.index_ttl_days.unwrap_or(0)
+        "Purging indices (daily TTL={}d, yearly TTL={}y)",
+        state.daily_index_ttl_days.unwrap_or(0),
+        state.yearly_index_ttl_years.unwrap_or(0)
     );
     let res = state
         .es_client
@@ -37,8 +38,9 @@ async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
         let can_exist = can_exist(
             &name,
             &current_time,
-            state.index_ttl_days,
+            state.daily_index_ttl_days,
             state.index_allow_future_days,
+            state.yearly_index_ttl_years,
         )?;
         if !can_exist {
             log::info!("Purging index: {}", name);

@@ -31,3 +31,7 @@ Search:
 See `compose.yaml` and `.env.example` for the configuration.
 
 `SRC_RELAYS` and `DEST_RELAYS` can be a comma-separated list of relay URLs.
+
+- `DAILY_INDEX_TTL`: TTL for daily indices in days.
+- `YEARLY_INDEX_KINDS`: comma-separated list of numeric kinds to store in yearly indices (e.g. `0,40,41,30023`). If unset, all kinds are stored in day-based indices.
+- `YEARLY_INDEX_TTL`: TTL for yearly indices in years (e.g. `2` keeps the current and previous year). Purger drops an index at midnight Jan 1 when it exceeds TTL.
