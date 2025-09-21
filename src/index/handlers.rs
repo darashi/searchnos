@@ -348,7 +348,7 @@ pub async fn handle_event(
 
 #[cfg(test)]
 mod tests {
-    use nostr_sdk::{EventBuilder, Keys, Tag};
+    use nostr_sdk::Tag;
 
     use crate::index::handlers::extract_identifier_tag;
 
