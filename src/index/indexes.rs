@@ -44,7 +44,10 @@ fn index_name_by_policy(
             Ok(format!("{}-{}", prefix, dt.format(DATE_FORMAT_DAY)))
         }
     } else {
-        Err(anyhow::anyhow!("failed to parse date: {}", created_at_epoch))
+        Err(anyhow::anyhow!(
+            "failed to parse date: {}",
+            created_at_epoch
+        ))
     }
 }
 
@@ -57,19 +60,25 @@ pub fn can_exist(
 ) -> anyhow::Result<bool> {
     let date_str = index_name.split('-').nth(1).unwrap_or("");
     // Try day-based format first, then fallback to year-based
-    let (index_time, is_yearly) = if let Ok(index_date) = NaiveDate::parse_from_str(date_str, DATE_FORMAT_DAY) {
-        (index_date.and_hms_opt(0, 0, 0), false)
-    } else if date_str.len() == 4 {
-        // Year-only format
-        if let Ok(year) = date_str.parse::<i32>() {
-            (NaiveDate::from_ymd_opt(year, 1, 1).and_then(|d| d.and_hms_opt(0, 0, 0)), true)
+    let (index_time, is_yearly) =
+        if let Ok(index_date) = NaiveDate::parse_from_str(date_str, DATE_FORMAT_DAY) {
+            (index_date.and_hms_opt(0, 0, 0), false)
+        } else if date_str.len() == 4 {
+            // Year-only format
+            if let Ok(year) = date_str.parse::<i32>() {
+                (
+                    NaiveDate::from_ymd_opt(year, 1, 1).and_then(|d| d.and_hms_opt(0, 0, 0)),
+                    true,
+                )
+            } else {
+                (None, false)
+            }
         } else {
             (None, false)
-        }
-    } else {
-        (None, false)
+        };
+    let Some(index_time) = index_time else {
+        return Ok(false);
     };
-    let Some(index_time) = index_time else { return Ok(false) };
     let index_time = Utc.from_utc_datetime(&index_time);
     let diff: chrono::Duration = current_time.signed_duration_since(index_time);
 

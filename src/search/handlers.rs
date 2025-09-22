@@ -97,12 +97,7 @@ pub async fn handle_req(
     subscription_id: &SubscriptionId,
     filters: Vec<nostr_sdk::Filter>,
 ) -> anyhow::Result<()> {
-    log::info!(
-        "{} [{}] req {:?}",
-        addr,
-        subscription_id,
-        filters
-    );
+    log::info!("{} [{}] req {:?}", addr, subscription_id, filters);
 
     if !subscriptions.lock().await.contains_key(subscription_id) {
         let num_ongoing_subscriptions = subscriptions.lock().await.len();

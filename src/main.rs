@@ -411,10 +411,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     });
 
     // Use YEARLY_INDEX_KINDS/--yearly-index-kinds only (legacy removed)
-    let yearly_index_kinds_raw = args
-        .yearly_index_kinds
-        .clone()
-        .unwrap_or_default();
+    let yearly_index_kinds_raw = args.yearly_index_kinds.clone().unwrap_or_default();
 
     let yearly_index_kinds = yearly_index_kinds_raw
         .as_str()
@@ -436,10 +433,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         .collect::<std::collections::HashSet<u16>>();
 
     if !yearly_index_kinds.is_empty() {
-        log::info!(
-            "Yearly index kinds enabled: {:?}",
-            yearly_index_kinds
-        );
+        log::info!("Yearly index kinds enabled: {:?}", yearly_index_kinds);
     }
 
     let app_state = Arc::new(AppState {
