@@ -314,15 +314,6 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
         generate_auth_challenge(),
     )));
 
-    let initial_challenge = {
-        let auth_state = auth_state.lock().await;
-        auth_state.challenge.clone()
-    };
-
-    if let Err(e) = send_auth_challenge(sender.clone(), &initial_challenge).await {
-        log::warn!("{} failed to send initial auth challenge: {}", addr, e);
-    }
-
     // spawn pinger
     let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
 
