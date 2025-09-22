@@ -1,5 +1,6 @@
+use anyhow::{anyhow, Context};
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{FromRequestParts, Query};
+use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::Extension;
 use axum::{
@@ -17,24 +18,46 @@ use elasticsearch::{
     Elasticsearch,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use nostr_sdk::prelude::{RelayInformationDocument, RelayMessage};
-use nostr_sdk::JsonUtil;
+use nostr_sdk::{
+    nips::nip42,
+    prelude::{RelayInformationDocument, RelayMessage, ToBech32},
+    JsonUtil, Kind, PublicKey, RelayUrl,
+};
+use rand::{distr::Alphanumeric, Rng};
 use searchnos::app_state::AppState;
 use searchnos::index::handlers::handle_event;
 use searchnos::index::purge::spawn_index_purger;
 use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req, ClosedError};
-use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use unicode_normalization::UnicodeNormalization;
 
-#[derive(Deserialize, Debug)]
-struct Parameter {
-    api_key: Option<String>,
+fn generate_auth_challenge() -> String {
+    rand::rng()
+        .sample_iter(Alphanumeric)
+        .map(char::from)
+        .take(32)
+        .collect()
+}
+
+struct ConnectionAuthState {
+    challenge: String,
+    is_admin: bool,
+    authenticated_pubkey: Option<PublicKey>,
+}
+
+impl ConnectionAuthState {
+    fn new(challenge: String) -> Self {
+        Self {
+            challenge,
+            is_admin: false,
+            authenticated_pubkey: None,
+        }
+    }
 }
 
 async fn process_message(
@@ -43,7 +66,7 @@ async fn process_message(
     subscriptions: Arc<Mutex<HashMap<nostr_sdk::SubscriptionId, Vec<nostr_sdk::Filter>>>>,
     addr: SocketAddr,
     msg: Message,
-    is_admin_connection: bool,
+    auth_state: Arc<Mutex<ConnectionAuthState>>,
 ) -> anyhow::Result<()> {
     match &msg {
         Message::Text(text) => {
@@ -55,9 +78,9 @@ async fn process_message(
                     filter,
                 } => {
                     handle_req(
-                        state,
-                        sender,
-                        subscriptions,
+                        state.clone(),
+                        sender.clone(),
+                        subscriptions.clone(),
                         addr,
                         &subscription_id,
                         vec![filter.into_owned()],
@@ -68,7 +91,46 @@ async fn process_message(
                     handle_close(subscriptions, addr, &subscription_id).await
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
-                    handle_event(sender, state, addr, &event, is_admin_connection).await
+                    let is_admin_connection = {
+                        let auth_state = auth_state.lock().await;
+                        auth_state.is_admin
+                    };
+
+                    handle_event(
+                        sender.clone(),
+                        state.clone(),
+                        addr,
+                        &event,
+                        is_admin_connection,
+                    )
+                    .await?;
+
+                    if !is_admin_connection {
+                        let challenge = {
+                            let auth_state = auth_state.lock().await;
+                            auth_state.challenge.clone()
+                        };
+                        if let Err(e) = send_auth_challenge(sender.clone(), &challenge).await {
+                            log::warn!(
+                                "{} failed to resend auth challenge after blocked EVENT: {}",
+                                addr,
+                                e
+                            );
+                        }
+                    }
+
+                    Ok(())
+                }
+                nostr_sdk::ClientMessage::Auth(event) => {
+                    handle_auth_message(
+                        state.clone(),
+                        sender.clone(),
+                        addr,
+                        event.into_owned(),
+                        auth_state.clone(),
+                    )
+                    .await?;
+                    Ok(())
                 }
                 _ => Err(anyhow::anyhow!("invalid message type")),
             }?
@@ -99,6 +161,19 @@ async fn send_notice(
     Ok(())
 }
 
+async fn send_auth_challenge(
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    challenge: &str,
+) -> anyhow::Result<()> {
+    let auth = RelayMessage::auth(challenge.to_string());
+    sender
+        .lock()
+        .await
+        .send(Message::Text(auth.as_json().into()))
+        .await?;
+    Ok(())
+}
+
 async fn send_closed(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     subscription_id: nostr_sdk::SubscriptionId,
@@ -110,6 +185,80 @@ async fn send_closed(
         .await
         .send(Message::Text(closed.as_json().into()))
         .await?;
+    Ok(())
+}
+
+async fn handle_auth_message(
+    state: Arc<AppState>,
+    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    addr: SocketAddr,
+    event: nostr_sdk::Event,
+    auth_state: Arc<Mutex<ConnectionAuthState>>,
+) -> anyhow::Result<()> {
+    let challenge = {
+        let auth_state = auth_state.lock().await;
+        auth_state.challenge.clone()
+    };
+
+    let npub = event
+        .pubkey
+        .to_bech32()
+        .unwrap_or_else(|_| event.pubkey.to_string());
+
+    if let Err(e) = event.verify() {
+        log::warn!(
+            "{} authentication failed due to invalid signature for {}: {}",
+            addr,
+            event.id,
+            e
+        );
+        send_notice(sender.clone(), "auth: invalid signature").await?;
+        send_auth_challenge(sender, &challenge).await?;
+        return Ok(());
+    }
+
+    let valid = if let Some(relay_url) = &state.public_relay_url {
+        nip42::is_valid_auth_event(&event, relay_url, &challenge)
+    } else {
+        event.kind == Kind::Authentication
+            && event
+                .tags
+                .challenge()
+                .map(|c| c == challenge)
+                .unwrap_or(false)
+    };
+
+    if !valid {
+        log::warn!(
+            "{} authentication failed due to invalid challenge or relay (pubkey {})",
+            addr,
+            npub
+        );
+        send_notice(sender.clone(), "auth: invalid challenge").await?;
+        send_auth_challenge(sender, &challenge).await?;
+        return Ok(());
+    }
+
+    if !state.admin_pubkeys.contains(&event.pubkey) {
+        log::warn!(
+            "{} authentication attempt with unauthorized pubkey {}",
+            addr,
+            npub
+        );
+        send_notice(sender.clone(), "auth: unauthorized pubkey").await?;
+        send_auth_challenge(sender, &challenge).await?;
+        return Ok(());
+    }
+
+    {
+        let mut auth_state = auth_state.lock().await;
+        auth_state.is_admin = true;
+        auth_state.authenticated_pubkey = Some(event.pubkey);
+    }
+
+    log::info!("{} authenticated successfully as {}", addr, npub);
+    send_notice(sender, "auth: success").await?;
+
     Ok(())
 }
 
@@ -153,23 +302,26 @@ fn match_event(event: &nostr_sdk::Event, filters: &[nostr_sdk::Filter]) -> bool 
     })
 }
 
-async fn websocket(
-    socket: WebSocket,
-    state: Arc<AppState>,
-    addr: SocketAddr,
-    is_admin_connection: bool,
-) {
-    log::info!(
-        "{} new websocket connection (admin: {})",
-        addr,
-        is_admin_connection
-    );
+async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
+    log::info!("{} new websocket connection", addr);
     let (sender, mut receiver) = socket.split();
     let sender = Arc::new(Mutex::new(sender));
     let subscriptions = Arc::new(Mutex::new(HashMap::<
         nostr_sdk::SubscriptionId,
         Vec<nostr_sdk::Filter>,
     >::new()));
+    let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
+        generate_auth_challenge(),
+    )));
+
+    let initial_challenge = {
+        let auth_state = auth_state.lock().await;
+        auth_state.challenge.clone()
+    };
+
+    if let Err(e) = send_auth_challenge(sender.clone(), &initial_challenge).await {
+        log::warn!("{} failed to send initial auth challenge: {}", addr, e);
+    }
 
     // spawn pinger
     let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
@@ -214,7 +366,7 @@ async fn websocket(
                     subscriptions.clone(),
                     addr,
                     msg,
-                    is_admin_connection,
+                    auth_state.clone(),
                 )
                 .await;
                 if let Err(e) = res {
@@ -248,7 +400,18 @@ async fn websocket(
     // abort searcher and pinger
     searcher_handle.abort();
     pinger_handle.abort();
-    log::info!("{} disconnected", addr);
+    let (was_admin, authed_pubkey) = {
+        let auth_state = auth_state.lock().await;
+        (auth_state.is_admin, auth_state.authenticated_pubkey)
+    };
+    match authed_pubkey {
+        Some(pubkey) => {
+            log::info!("{} disconnected (admin: true, pubkey: {})", addr, pubkey);
+        }
+        None => {
+            log::info!("{} disconnected (admin: {})", addr, was_admin);
+        }
+    }
 }
 
 async fn ping() -> impl IntoResponse {
@@ -303,18 +466,11 @@ where
 
 async fn websocket_handler(
     _: ReturnRelayInfoExtractor,
-    params: Query<Parameter>,
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    let is_admin_connection = if let Some(api_key) = &params.api_key {
-        state.api_key == *api_key
-    } else {
-        false
-    };
-
-    ws.on_upgrade(move |socket| websocket(socket, state, addr, is_admin_connection))
+    ws.on_upgrade(move |socket| websocket(socket, state, addr))
 }
 
 use clap::Parser;
@@ -329,9 +485,13 @@ struct Args {
     #[arg(long, env)]
     es_url: String,
 
-    /// API key for administrative connection to searchnos
-    #[arg(long, env)]
-    api_key: String,
+    /// Comma-separated list of admin public keys allowed to publish events
+    #[arg(long = "admin-pubkeys", env = "ADMIN_PUBKEYS", value_delimiter = ',')]
+    admin_pubkeys: Vec<PublicKey>,
+
+    /// Public relay URL used to validate AUTH events (optional)
+    #[arg(long = "public-relay-url", env = "PUBLIC_RELAY_URL")]
+    public_relay_url: Option<String>,
 
     /// Maximum number of subscriptions per client
     #[arg(long, env, default_value_t = 8)]
@@ -397,7 +557,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
     relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
-    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 50, 70]);
+    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 42, 50, 70]);
     relay_info.software = Some(pkg_name);
     relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info).unwrap();
@@ -436,6 +596,26 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         log::info!("Yearly index kinds enabled: {:?}", yearly_index_kinds);
     }
 
+    let admin_pubkeys: HashSet<PublicKey> = args.admin_pubkeys.iter().copied().collect();
+
+    if admin_pubkeys.is_empty() {
+        return Err(anyhow!("no admin pubkeys configured").into());
+    }
+
+    log::info!("Configured {} admin pubkey(s)", admin_pubkeys.len());
+
+    let public_relay_url = match &args.public_relay_url {
+        Some(url) => {
+            let url = url.trim();
+            if url.is_empty() {
+                None
+            } else {
+                Some(RelayUrl::parse(url).with_context(|| format!("invalid relay url '{}'", url))?)
+            }
+        }
+        None => None,
+    };
+
     let app_state = Arc::new(AppState {
         relay_info,
         es_client,
@@ -443,7 +623,8 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         index_alias_name: index_alias_name.to_string(),
         max_subscriptions: args.max_subscriptions, // TODO include this in relay info
         max_filters: args.max_filters,             // TODO include this in relay info
-        api_key: args.api_key.to_string(),
+        admin_pubkeys,
+        public_relay_url,
         ping_interval: Duration::from_secs(args.ping_interval),
         daily_index_ttl_days: args.daily_index_ttl,
         index_allow_future_days: args.index_allow_future_days,
@@ -500,10 +681,12 @@ mod tests {
         env_logger::init();
 
         let port = find_available_port().expect("no available port found");
+        let admin_pubkey = nostr_sdk::Keys::generate().public_key();
         let args = Args {
             port,
             es_url: "http://elastic:super-secret-nostaro@localhost:9200".to_string(),
-            api_key: "TEST_API_KEY".to_string(),
+            admin_pubkeys: vec![admin_pubkey],
+            public_relay_url: None,
             max_subscriptions: 100,
             max_filters: 32,
             ping_interval: 55,

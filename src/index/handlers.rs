@@ -320,7 +320,7 @@ pub async fn handle_event(
 
     if !is_admin_connection {
         log::info!("{} blocked EVENT {}", addr, event.as_json());
-        return send_ok(sender, event, false, "blocked: EVENT not allowed").await;
+        return send_ok(sender, event, false, "restricted: authentication required").await;
     }
 
     // NIP-70: Check for protected event

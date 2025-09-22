@@ -28,7 +28,8 @@ services:
     container_name: searchnos-indexer
     environment:
       - SRC_RELAYS=${SRC_RELAYS}
-      - DEST_RELAYS=ws://searchnos:3000?api_key=${API_KEY}
+      - DEST_RELAYS=ws://searchnos:3000
+      - INDEXER_SECRET_KEY=${INDEXER_SECRET_KEY}
     restart: always
     depends_on:
       searchnos:
@@ -42,7 +43,8 @@ services:
     environment:
       - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
-      - API_KEY=${API_KEY}
+      - ADMIN_PUBKEYS=${ADMIN_PUBKEYS}
+      - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
       - DAILY_INDEX_TTL=${DAILY_INDEX_TTL}
       - YEARLY_INDEX_KINDS=${YEARLY_INDEX_KINDS}
       - YEARLY_INDEX_TTL=${YEARLY_INDEX_TTL}

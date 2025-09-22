@@ -1,6 +1,6 @@
 use log::info;
 use nostr_sdk::prelude::*;
-use std::env;
+use std::{env, str::FromStr};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,10 +12,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("SRC_RELAYS is not set; set it to the comma-separated URLs of relays");
     let dest_relays = env::var("DEST_RELAYS")
         .expect("DEST_RELAYS is not set; set it to the comma-separated URLs of relays");
+    let indexer_secret_key = env::var("INDEXER_SECRET_KEY")
+        .expect("INDEXER_SECRET_KEY is not set; set it to the hex/bech32 encoded secret key used for destination authentication");
+
+    let dest_keys = Keys::from_str(&indexer_secret_key)
+        .expect("INDEXER_SECRET_KEY is invalid; expected hex or nsec format");
+    let dest_pubkey = dest_keys.public_key();
 
     // prepare nostr clients
-    let my_keys: Keys = Keys::generate();
-    let src_client = Client::new(my_keys.clone());
+    let src_keys: Keys = Keys::generate();
+    let src_client = Client::new(src_keys);
 
     for relay in src_relays.split(',') {
         info!("adding source relay: {}", relay);
@@ -23,7 +29,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     src_client.connect().await;
 
-    let dest_client = Client::new(my_keys);
+    info!(
+        "adding destination relays with admin pubkey {}",
+        dest_pubkey
+    );
+    let dest_client = Client::new(dest_keys);
     for relay in dest_relays.split(',') {
         info!("adding destination relay: {}", relay);
         dest_client.add_relay(relay).await?;
