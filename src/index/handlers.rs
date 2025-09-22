@@ -301,7 +301,7 @@ async fn handle_deletion_event(
     Ok(())
 }
 
-async fn send_ok(
+pub async fn send_ok(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     event: &Event,
     status: bool,

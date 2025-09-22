@@ -6,7 +6,6 @@ use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::Instrument;
 
 use crate::app_state::AppState;
 use crate::search::query::ElasticsearchQuery;
@@ -44,7 +43,6 @@ async fn send_eose(
 }
 
 async fn query_then_send(
-    addr: SocketAddr,
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     subscription_id: SubscriptionId,
@@ -97,8 +95,12 @@ pub async fn handle_req(
     filters: Vec<nostr_sdk::Filter>,
 ) -> anyhow::Result<()> {
     let filter_count = filters.len();
-    let req_span =
-        tracing::info_span!("req", subscription = %subscription_id, filter_count = filter_count);
+    let req_span = tracing::info_span!(
+        "req",
+        subscription = %subscription_id,
+        filter_count = filter_count,
+        addr = %addr
+    );
     let _span_guard = req_span.enter();
 
     if !subscriptions.lock().await.contains_key(subscription_id) {
@@ -127,7 +129,6 @@ pub async fn handle_req(
         let query = ElasticsearchQuery::from_filter(filter.clone(), None);
 
         query_then_send(
-            addr,
             state.clone(),
             sender.clone(),
             subscription_id.clone(),

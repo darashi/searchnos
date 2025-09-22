@@ -25,7 +25,7 @@ use nostr_sdk::{
 };
 use rand::{distr::Alphanumeric, Rng};
 use searchnos::app_state::AppState;
-use searchnos::index::handlers::handle_event;
+use searchnos::index::handlers::{handle_event, send_ok};
 use searchnos::index::purge::spawn_index_purger;
 use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req, ClosedError};
@@ -108,19 +108,6 @@ async fn process_message(
                         is_admin_connection,
                     )
                     .await?;
-
-                    if !is_admin_connection {
-                        let challenge = {
-                            let auth_state = auth_state.lock().await;
-                            auth_state.challenge.clone()
-                        };
-                        if let Err(e) = send_auth_challenge(sender.clone(), &challenge).await {
-                            tracing::warn!(
-                                "failed to resend auth challenge after blocked EVENT: {}",
-                                e
-                            );
-                        }
-                    }
 
                     Ok(())
                 }
@@ -213,7 +200,6 @@ async fn handle_auth_message(
             e
         );
         send_notice(sender.clone(), "auth: invalid signature").await?;
-        send_auth_challenge(sender, &challenge).await?;
         return Ok(());
     }
 
@@ -234,7 +220,6 @@ async fn handle_auth_message(
             npub
         );
         send_notice(sender.clone(), "auth: invalid challenge").await?;
-        send_auth_challenge(sender, &challenge).await?;
         return Ok(());
     }
 
@@ -255,7 +240,6 @@ async fn handle_auth_message(
     if !is_authorized_pubkey {
         tracing::warn!("authentication attempt with unauthorized pubkey {}", npub);
         send_notice(sender.clone(), "auth: unauthorized pubkey").await?;
-        send_auth_challenge(sender, &challenge).await?;
         return Ok(());
     }
 
@@ -265,7 +249,7 @@ async fn handle_auth_message(
     }
 
     tracing::info!("authenticated successfully as {}", npub);
-    send_notice(sender, "auth: success").await?;
+    send_ok(sender.clone(), &event, true, "").await?;
 
     Ok(())
 }
@@ -330,6 +314,14 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
         let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
             generate_auth_challenge(),
         )));
+
+        let initial_challenge = {
+            let auth_state = auth_state.lock().await;
+            auth_state.challenge.clone()
+        };
+        if let Err(e) = send_auth_challenge(sender.clone(), &initial_challenge).await {
+            tracing::warn!("failed to send initial auth challenge: {}", e);
+        }
 
         // spawn pinger
         let pinger_handle = spawn_pinger(state.clone(), sender.clone(), span_for_pinger).await;
