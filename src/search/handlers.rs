@@ -6,6 +6,7 @@ use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 use crate::app_state::AppState;
 use crate::search::query::ElasticsearchQuery;
@@ -58,12 +59,10 @@ async fn query_then_send(
     let num_hits = events.len();
     send_events(sender.clone(), &subscription_id, events).await?;
 
-    log::info!(
-        "{} [{}] sent {} event(s), searched in {} ms",
-        addr,
-        subscription_id,
-        num_hits,
-        search_time,
+    tracing::info!(
+        hits = num_hits,
+        elapsed_ms = search_time as u64,
+        "search results sent",
     );
     Ok(new_cursor)
 }
@@ -97,7 +96,10 @@ pub async fn handle_req(
     subscription_id: &SubscriptionId,
     filters: Vec<nostr_sdk::Filter>,
 ) -> anyhow::Result<()> {
-    log::info!("{} [{}] req {:?}", addr, subscription_id, filters);
+    let filter_count = filters.len();
+    let req_span =
+        tracing::info_span!("req", subscription = %subscription_id, filter_count = filter_count);
+    let _span_guard = req_span.enter();
 
     if !subscriptions.lock().await.contains_key(subscription_id) {
         let num_ongoing_subscriptions = subscriptions.lock().await.len();
@@ -149,7 +151,7 @@ pub async fn handle_close(
     addr: SocketAddr,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
-    log::info!("{} CLOSE {:?}", addr, subscription_id.to_string());
+    tracing::info!(addr = %addr, subscription = %subscription_id, "CLOSE received");
     subscriptions.lock().await.remove(subscription_id);
 
     Ok(())

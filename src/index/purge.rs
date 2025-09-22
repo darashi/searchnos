@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 use crate::{app_state::AppState, index::indexes::can_exist};
 
 async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
-    log::info!(
+    tracing::info!(
         "Purging indices (daily TTL={}d, yearly TTL={}y)",
         state.daily_index_ttl_days.unwrap_or(0),
         state.yearly_index_ttl_years.unwrap_or(0)
@@ -33,7 +33,7 @@ async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
     }
     let current_time = chrono::Utc::now();
     let indices = res.json::<HashMap<String, Value>>().await?;
-    log::info!("Number of indices available: {:?}", indices.len());
+    tracing::info!("Number of indices available: {:?}", indices.len());
     for (name, _index_info) in indices {
         let can_exist = can_exist(
             &name,
@@ -43,7 +43,7 @@ async fn purge_indices(state: Arc<AppState>) -> anyhow::Result<()> {
             state.yearly_index_ttl_years,
         )?;
         if !can_exist {
-            log::info!("Purging index: {}", name);
+            tracing::info!("Purging index: {}", name);
             let res = state
                 .es_client
                 .indices()
@@ -69,7 +69,7 @@ pub async fn spawn_index_purger(state: Arc<AppState>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             if let Err(e) = purge_indices(state.clone()).await {
-                log::error!("Error purging index: {}", e);
+                tracing::error!("Error purging index: {}", e);
             }
             tokio::time::sleep(Duration::from_secs(60 * 60)).await;
         }

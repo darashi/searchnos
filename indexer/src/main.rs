@@ -1,11 +1,20 @@
-use log::info;
 use nostr_sdk::prelude::*;
 use std::{env, str::FromStr};
+use tracing::info;
+
+fn init_tracing() {
+    let _ = tracing_log::LogTracer::init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .try_init();
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("RUST_LOG", "info");
-    env_logger::init();
+    init_tracing();
 
     // env vars
     let src_relays = env::var("SRC_RELAYS")
@@ -60,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut notifications = src_client.notifications();
         while let Ok(notification) = notifications.recv().await {
             if let RelayPoolNotification::Event { event, .. } = notification {
-                log::info!("received event: {}", event.as_json());
+                info!("received event: {}", event.as_json());
                 // TODO check dates
                 dest_client.send_event(&event).await?;
             }

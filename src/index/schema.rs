@@ -1,9 +1,9 @@
 use elasticsearch::{
     indices::IndicesPutIndexTemplateParts, ingest::IngestPutPipelineParts, Elasticsearch,
 };
-use log::info;
 use nostr_sdk::prelude::*;
 use serde_json::json;
+use tracing::info;
 
 pub async fn put_pipeline(
     es_client: &Elasticsearch,

@@ -194,7 +194,7 @@ impl ElasticsearchQuery {
 
         let search_response = match search_response {
             Err(err) => {
-                log::error!("failed to execute search query {:?}: {}", self, err);
+                tracing::error!("failed to execute search query {:?}: {}", self, err);
                 return Err(anyhow::anyhow!("failed to execute search query"));
             }
             Ok(search_response) => search_response,

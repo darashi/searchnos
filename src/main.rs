@@ -30,10 +30,12 @@ use searchnos::index::purge::spawn_index_purger;
 use searchnos::index::schema::{create_index_template, put_pipeline};
 use searchnos::search::handlers::{handle_close, handle_req, ClosedError};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::{Instrument, Span};
 use unicode_normalization::UnicodeNormalization;
 
 fn generate_auth_challenge() -> String {
@@ -43,6 +45,8 @@ fn generate_auth_challenge() -> String {
         .take(32)
         .collect()
 }
+
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 struct ConnectionAuthState {
     challenge: String,
@@ -70,7 +74,7 @@ async fn process_message(
 ) -> anyhow::Result<()> {
     match &msg {
         Message::Text(text) => {
-            log::info!("{} RECEIVED {}", addr, text);
+            tracing::info!("RECEIVED {}", text);
             let client_message = nostr_sdk::ClientMessage::from_json(text.as_bytes())?;
             match client_message {
                 nostr_sdk::ClientMessage::Req {
@@ -111,9 +115,8 @@ async fn process_message(
                             auth_state.challenge.clone()
                         };
                         if let Err(e) = send_auth_challenge(sender.clone(), &challenge).await {
-                            log::warn!(
-                                "{} failed to resend auth challenge after blocked EVENT: {}",
-                                addr,
+                            tracing::warn!(
+                                "failed to resend auth challenge after blocked EVENT: {}",
                                 e
                             );
                         }
@@ -125,7 +128,6 @@ async fn process_message(
                     handle_auth_message(
                         state.clone(),
                         sender.clone(),
-                        addr,
                         event.into_owned(),
                         auth_state.clone(),
                     )
@@ -136,7 +138,7 @@ async fn process_message(
             }?
         }
         Message::Close(_) => {
-            log::info!("{} close message received", addr);
+            tracing::info!("close message received");
             return Ok(());
         }
         Message::Pong(_) => {}
@@ -191,7 +193,6 @@ async fn send_closed(
 async fn handle_auth_message(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    addr: SocketAddr,
     event: nostr_sdk::Event,
     auth_state: Arc<Mutex<ConnectionAuthState>>,
 ) -> anyhow::Result<()> {
@@ -206,9 +207,8 @@ async fn handle_auth_message(
         .unwrap_or_else(|_| event.pubkey.to_string());
 
     if let Err(e) = event.verify() {
-        log::warn!(
-            "{} authentication failed due to invalid signature for {}: {}",
-            addr,
+        tracing::warn!(
+            "authentication failed due to invalid signature for {}: {}",
             event.id,
             e
         );
@@ -229,9 +229,8 @@ async fn handle_auth_message(
     };
 
     if !valid {
-        log::warn!(
-            "{} authentication failed due to invalid challenge or relay (pubkey {})",
-            addr,
+        tracing::warn!(
+            "authentication failed due to invalid challenge or relay (pubkey {})",
             npub
         );
         send_notice(sender.clone(), "auth: invalid challenge").await?;
@@ -239,12 +238,22 @@ async fn handle_auth_message(
         return Ok(());
     }
 
-    if !state.admin_pubkeys.contains(&event.pubkey) {
-        log::warn!(
-            "{} authentication attempt with unauthorized pubkey {}",
-            addr,
-            npub
-        );
+    let is_authorized_pubkey = state.admin_pubkeys.contains(&event.pubkey);
+
+    {
+        let mut auth_state = auth_state.lock().await;
+        if !auth_state.is_admin {
+            auth_state.authenticated_pubkey = Some(event.pubkey);
+        }
+    }
+    tracing::info!(
+        auth_pubkey = %npub,
+        admin = is_authorized_pubkey,
+        "nip42 authentication verified"
+    );
+
+    if !is_authorized_pubkey {
+        tracing::warn!("authentication attempt with unauthorized pubkey {}", npub);
         send_notice(sender.clone(), "auth: unauthorized pubkey").await?;
         send_auth_challenge(sender, &challenge).await?;
         return Ok(());
@@ -253,10 +262,9 @@ async fn handle_auth_message(
     {
         let mut auth_state = auth_state.lock().await;
         auth_state.is_admin = true;
-        auth_state.authenticated_pubkey = Some(event.pubkey);
     }
 
-    log::info!("{} authenticated successfully as {}", addr, npub);
+    tracing::info!("authenticated successfully as {}", npub);
     send_notice(sender, "auth: success").await?;
 
     Ok(())
@@ -265,19 +273,22 @@ async fn handle_auth_message(
 async fn spawn_pinger(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    addr: SocketAddr,
+    span: Span,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(state.ping_interval).await;
-            log::info!("{} sending ping", addr);
-            let res = sender.lock().await.send(Message::Ping(vec![].into())).await;
-            if let Err(e) = res {
-                log::warn!("{} error sending ping: {}", addr, e);
-                return;
+    tokio::spawn(
+        async move {
+            loop {
+                tokio::time::sleep(state.ping_interval).await;
+                tracing::info!("sending ping");
+                let res = sender.lock().await.send(Message::Ping(vec![].into())).await;
+                if let Err(e) = res {
+                    tracing::warn!("error sending ping: {}", e);
+                    return;
+                }
             }
         }
-    })
+        .instrument(span),
+    )
 }
 fn match_search(normalized_content: &str, filter: &nostr_sdk::Filter) -> bool {
     match filter.search {
@@ -303,106 +314,123 @@ fn match_event(event: &nostr_sdk::Event, filters: &[nostr_sdk::Filter]) -> bool 
 }
 
 async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
-    log::info!("{} new websocket connection", addr);
-    let (sender, mut receiver) = socket.split();
-    let sender = Arc::new(Mutex::new(sender));
-    let subscriptions = Arc::new(Mutex::new(HashMap::<
-        nostr_sdk::SubscriptionId,
-        Vec<nostr_sdk::Filter>,
-    >::new()));
-    let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
-        generate_auth_challenge(),
-    )));
+    let conn_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let connection_span = tracing::info_span!("connection", conn_id = conn_id, addr = %addr);
+    let span_for_pinger = connection_span.clone();
+    let span_for_searcher = connection_span.clone();
 
-    // spawn pinger
-    let pinger_handle = spawn_pinger(state.clone(), sender.clone(), addr).await;
+    async move {
+        tracing::info!("new websocket connection");
+        let (sender, mut receiver) = socket.split();
+        let sender = Arc::new(Mutex::new(sender));
+        let subscriptions = Arc::new(Mutex::new(HashMap::<
+            nostr_sdk::SubscriptionId,
+            Vec<nostr_sdk::Filter>,
+        >::new()));
+        let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
+            generate_auth_challenge(),
+        )));
 
-    // span searcher
-    let searcher_handle = tokio::spawn({
-        let mut rx = state.tx.subscribe();
-        let subscriptions = subscriptions.clone();
-        let sender = sender.clone();
-        async move {
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        for (subscription_id, filters) in subscriptions.lock().await.iter() {
-                            if match_event(&event, filters) {
-                                let relay_msg =
-                                    RelayMessage::event(subscription_id.clone(), event.clone());
-                                sender
-                                    .lock()
-                                    .await
-                                    .send(Message::Text(relay_msg.as_json().into()))
-                                    .await
-                                    .unwrap();
+        // spawn pinger
+        let pinger_handle = spawn_pinger(state.clone(), sender.clone(), span_for_pinger).await;
+
+        // span searcher
+        let searcher_handle = {
+            let mut rx = state.tx.subscribe();
+            let subscriptions = subscriptions.clone();
+            let sender = sender.clone();
+            tokio::spawn(
+                async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(event) => {
+                                for (subscription_id, filters) in subscriptions.lock().await.iter()
+                                {
+                                    if match_event(&event, filters) {
+                                        let relay_msg = RelayMessage::event(
+                                            subscription_id.clone(),
+                                            event.clone(),
+                                        );
+                                        sender
+                                            .lock()
+                                            .await
+                                            .send(Message::Text(relay_msg.as_json().into()))
+                                            .await
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("error receiving event: {}", e);
                             }
                         }
                     }
-                    Err(e) => {
-                        log::warn!("{} error receiving event: {}", addr, e);
+                }
+                .instrument(span_for_searcher),
+            )
+        };
+
+        loop {
+            match receiver.next().await {
+                Some(Ok(msg)) => {
+                    let sender = sender.clone();
+                    let res = process_message(
+                        state.clone(),
+                        sender.clone(),
+                        subscriptions.clone(),
+                        addr,
+                        msg,
+                        auth_state.clone(),
+                    )
+                    .await;
+                    if let Err(e) = res {
+                        tracing::warn!("error processing message: {}", e);
+                        if let Some(e) = e.downcast_ref::<ClosedError>() {
+                            let res =
+                                send_closed(sender, e.subscription_id.clone(), &e.to_string())
+                                    .await;
+                            if let Err(e) = res {
+                                tracing::error!("error sending closed: {}", e);
+                                break;
+                            }
+                        } else {
+                            let res = send_notice(sender, &format!("Error: {}", e)).await;
+                            if let Err(e) = res {
+                                tracing::error!("error sending notice: {}", e);
+                                break;
+                            }
+                        }
                     }
+                }
+                Some(Err(e)) => {
+                    tracing::warn!("error receiving message: {}", e);
+                }
+                None => {
+                    tracing::info!("websocket connection closed");
+                    break;
                 }
             }
         }
-    });
 
-    loop {
-        match receiver.next().await {
-            Some(Ok(msg)) => {
-                let sender = sender.clone();
-                let res = process_message(
-                    state.clone(),
-                    sender.clone(),
-                    subscriptions.clone(),
-                    addr,
-                    msg,
-                    auth_state.clone(),
-                )
-                .await;
-                if let Err(e) = res {
-                    log::warn!("{} error processing message: {}", addr, e);
-                    if let Some(e) = e.downcast_ref::<ClosedError>() {
-                        let res =
-                            send_closed(sender, e.subscription_id.clone(), &e.to_string()).await;
-                        if let Err(e) = res {
-                            log::error!("{} error sending closed: {}", addr, e);
-                            break;
-                        }
-                    } else {
-                        let res = send_notice(sender, &format!("Error: {}", e)).await;
-                        if let Err(e) = res {
-                            log::error!("{} error sending notice: {}", addr, e);
-                            break;
-                        }
-                    }
-                }
-            }
-            Some(Err(e)) => {
-                log::warn!("{} error receiving message: {}", addr, e);
+        // abort searcher and pinger
+        searcher_handle.abort();
+        pinger_handle.abort();
+        let (was_admin, authed_pubkey) = {
+            let auth_state = auth_state.lock().await;
+            (auth_state.is_admin, auth_state.authenticated_pubkey)
+        };
+        match authed_pubkey {
+            Some(pubkey) => {
+                let npub = pubkey.to_bech32().unwrap_or_else(|_| pubkey.to_string());
+                tracing::info!(auth_pubkey = %npub, admin = was_admin, "disconnected");
             }
             None => {
-                log::info!("{} websocket connection closed", addr);
-                break;
+                tracing::info!(admin = was_admin, "disconnected");
             }
         }
     }
-
-    // abort searcher and pinger
-    searcher_handle.abort();
-    pinger_handle.abort();
-    let (was_admin, authed_pubkey) = {
-        let auth_state = auth_state.lock().await;
-        (auth_state.is_admin, auth_state.authenticated_pubkey)
-    };
-    match authed_pubkey {
-        Some(pubkey) => {
-            log::info!("{} disconnected (admin: true, pubkey: {})", addr, pubkey);
-        }
-        None => {
-            log::info!("{} disconnected (admin: {})", addr, was_admin);
-        }
-    }
+    .instrument(connection_span)
+    .await;
 }
 
 async fn ping() -> impl IntoResponse {
@@ -521,9 +549,9 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     );
     let pkg_name = env!("CARGO_PKG_NAME").to_string();
 
-    log::info!("{} {}", pkg_name, version);
+    tracing::info!("{} {}", pkg_name, version);
 
-    log::info!("connecting to elasticsearch");
+    tracing::info!("connecting to elasticsearch");
 
     // prepare elasticsearch client
     let es_url = Url::parse(&args.es_url).expect("invalid elasticsearch url");
@@ -543,7 +571,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         index_template_name,
     )
     .await?;
-    log::info!("elasticsearch index ready");
+    tracing::info!("elasticsearch index ready");
 
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
@@ -575,7 +603,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
                 match s.parse::<u16>() {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        log::warn!("Invalid YEARLY_INDEX_KINDS entry '{}': {}", s, e);
+                        tracing::warn!("Invalid YEARLY_INDEX_KINDS entry '{}': {}", s, e);
                         None
                     }
                 }
@@ -584,7 +612,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         .collect::<std::collections::HashSet<u16>>();
 
     if !yearly_index_kinds.is_empty() {
-        log::info!("Yearly index kinds enabled: {:?}", yearly_index_kinds);
+        tracing::info!("Yearly index kinds enabled: {:?}", yearly_index_kinds);
     }
 
     let admin_pubkeys: HashSet<PublicKey> = args.admin_pubkeys.iter().copied().collect();
@@ -593,7 +621,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
         return Err(anyhow!("no admin pubkeys configured").into());
     }
 
-    log::info!("Configured {} admin pubkey(s)", admin_pubkeys.len());
+    tracing::info!("Configured {} admin pubkey(s)", admin_pubkeys.len());
 
     let public_relay_url = match &args.public_relay_url {
         Some(url) => {
@@ -627,7 +655,7 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     if args.daily_index_ttl.is_some() {
         spawn_index_purger(app_state.clone()).await;
     } else {
-        log::info!("index ttl is disabled");
+        tracing::info!("index ttl is disabled");
     }
 
     let app = Router::new()
@@ -638,15 +666,24 @@ async fn app(args: &Args) -> Result<Router, Box<dyn std::error::Error>> {
     Ok(app)
 }
 
+fn init_tracing() {
+    let _ = tracing_log::LogTracer::init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .try_init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("RUST_LOG", "info");
-    env_logger::init();
+    init_tracing();
     let args = Args::parse();
     let app = app(&args).await?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    log::info!("listening on {}", addr);
+    tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(
         listener,
@@ -669,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn somke_test() {
-        env_logger::init();
+        init_tracing();
 
         let port = find_available_port().expect("no available port found");
         let admin_pubkey = nostr_sdk::Keys::generate().public_key();

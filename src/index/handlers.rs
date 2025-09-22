@@ -1,9 +1,7 @@
-use anyhow::Context;
 use axum::extract::ws::{Message, WebSocket};
 use chrono::Utc;
 use elasticsearch::{DeleteByQueryParts, Elasticsearch, IndexParts};
 use futures::sink::SinkExt;
-use log::{error, info, warn};
 use nostr_sdk::prelude::*;
 use nostr_sdk::Event;
 use serde::Serialize;
@@ -95,11 +93,12 @@ async fn delete_replaceable_event(
         ));
     }
     let response_body = res.json::<serde_json::Value>().await?;
-    info!(
-        "replaceable event (kind {}): deleted {} event(s) of for pubkey {}",
-        event.kind.as_u16(),
-        response_body["deleted"],
-        event.pubkey,
+    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
+    tracing::info!(
+        kind = event.kind.as_u16(),
+        pubkey = %event.pubkey,
+        deleted = deleted,
+        "deleted replaceable events"
     );
     Ok(())
 }
@@ -167,12 +166,13 @@ async fn delete_parameterized_replaceable_event(
         ));
     }
     let response_body = res.json::<serde_json::Value>().await?;
-    info!(
-        "parameterized replaceable event (kind {}): deleted {} event(s) of for pubkey {}, identifier_tag {}",
-        event.kind.as_u16(),
-        response_body["deleted"],
-        event.pubkey,
-        identifier_tag,
+    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
+    tracing::info!(
+        kind = event.kind.as_u16(),
+        pubkey = %event.pubkey,
+        identifier_tag = identifier_tag,
+        deleted = deleted,
+        "deleted parameterized replaceable events"
     );
     Ok(())
 }
@@ -183,8 +183,6 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
         event,
         &state.yearly_index_kinds,
     )?;
-    info!("{} {}", index_name, event.as_json());
-
     state.tx.send(event.clone())?;
 
     if event.kind.is_ephemeral() {
@@ -200,7 +198,7 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
     )
     .unwrap_or(false);
     if !ok {
-        warn!("index {} is out of range; skipping", index_name);
+        tracing::warn!("index {} is out of range; skipping", index_name);
         return Ok(());
     }
 
@@ -222,7 +220,7 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        error!("failed to index; received {}, {}", status_code, body);
+        tracing::error!("failed to index; received {}, {}", status_code, body);
     }
 
     if event.kind.is_replaceable() {
@@ -244,7 +242,6 @@ async fn handle_deletion_event(
     event: &Event,
 ) -> anyhow::Result<()> {
     let deletion_event = event;
-    log::info!("deletion event: {}", deletion_event.as_json());
     let ids_to_delete = deletion_event
         .tags
         .iter()
@@ -253,7 +250,19 @@ async fn handle_deletion_event(
             _ => None,
         })
         .collect::<Vec<String>>();
-    log::info!("ids to delete: {:?}", ids_to_delete);
+
+    let deletion_span = tracing::info_span!(
+        "deletion_event",
+        event_id = %deletion_event.id,
+        pubkey = %deletion_event.pubkey,
+        target_count = ids_to_delete.len()
+    );
+    let _span_guard = deletion_span.enter();
+
+    tracing::info!("processing deletion request");
+    if tracing::enabled!(tracing::Level::DEBUG) && !ids_to_delete.is_empty() {
+        tracing::debug!(targets = ?ids_to_delete, "deleting targets");
+    }
 
     let res = es_client
         .delete_by_query(DeleteByQueryParts::Index(&[index_alias_name]))
@@ -281,15 +290,13 @@ async fn handle_deletion_event(
     if !res.status_code().is_success() {
         let status_code = res.status_code();
         let body = res.text().await?;
-        error!("failed to delete; received {}, {}", status_code, body);
+        tracing::error!("failed to delete; received {}, {}", status_code, body);
         return Err(anyhow::anyhow!("failed to delete"));
     }
 
     let response_body = res.json::<serde_json::Value>().await?;
-    info!(
-        "delete event: deleted {} event(s) of for pubkey {}",
-        response_body["deleted"], event.pubkey,
-    );
+    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
+    tracing::info!(deleted = deleted, "deleted events for requesting pubkey");
 
     Ok(())
 }
@@ -312,35 +319,42 @@ async fn send_ok(
 pub async fn handle_event(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     state: Arc<AppState>,
-    addr: SocketAddr,
+    _addr: SocketAddr,
     event: &nostr_sdk::Event,
     is_admin_connection: bool,
 ) -> anyhow::Result<()> {
-    event.verify().context("failed to verify event")?;
+    let event_span = tracing::info_span!(
+        "event",
+        id = %event.id,
+        kind = event.kind.as_u16(),
+        pubkey = %event.pubkey,
+        admin = is_admin_connection
+    );
+    let _span_guard = event_span.enter();
+
+    if let Err(e) = event.verify() {
+        tracing::warn!(error = %e, "signature verification failed");
+        return Err(e.into());
+    }
 
     if !is_admin_connection {
-        log::info!("{} blocked EVENT {}", addr, event.as_json());
+        tracing::info!("blocked: authentication required");
         return send_ok(sender, event, false, "restricted: authentication required").await;
     }
 
     // NIP-70: Check for protected event
     if event.is_protected() {
-        log::info!("{} protected EVENT (NIP-70) {}", addr, event.as_json());
+        tracing::info!("blocked: protected event (NIP-70)");
         return send_ok(sender, event, false, "blocked: protected event").await;
     }
 
     match handle_update(state, event).await {
         Ok(_) => {
-            log::info!("{} accepted EVENT {}", addr, event.as_json());
+            tracing::info!("accepted");
             send_ok(sender, event, true, "").await
         }
         Err(e) => {
-            log::error!(
-                "{} failed to handle EVENT {}: {:?}",
-                addr,
-                event.as_json(),
-                e
-            );
+            tracing::error!(error = %e, "failed to handle event");
             send_ok(sender, event, false, "error: failed to handle EVENT").await
         }
     }
