@@ -93,6 +93,20 @@ async fn process_message(
                     )
                     .await
                 }
+                nostr_sdk::ClientMessage::ReqMultiFilter {
+                    subscription_id,
+                    filters,
+                } => {
+                    handle_req(
+                        state.clone(),
+                        sender.clone(),
+                        subscriptions.clone(),
+                        addr,
+                        &subscription_id,
+                        filters,
+                    )
+                    .await
+                }
                 nostr_sdk::ClientMessage::Close(subscription_id) => {
                     handle_close(subscriptions, addr, &subscription_id).await
                 }
