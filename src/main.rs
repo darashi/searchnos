@@ -134,7 +134,7 @@ async fn process_message(
                     .await?;
                     Ok(())
                 }
-                _ => Err(anyhow::anyhow!("invalid message type")),
+                other => Err(anyhow!("invalid message type: {:?}", other)),
             }?
         }
         Message::Close(_) => {
