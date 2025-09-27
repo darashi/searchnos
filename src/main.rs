@@ -50,6 +50,7 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 struct ConnectionAuthState {
     challenge: String,
+    challenge_sent: bool,
     is_admin: bool,
     authenticated_pubkey: Option<PublicKey>,
 }
@@ -58,6 +59,7 @@ impl ConnectionAuthState {
     fn new(challenge: String) -> Self {
         Self {
             challenge,
+            challenge_sent: false,
             is_admin: false,
             authenticated_pubkey: None,
         }
@@ -95,10 +97,21 @@ async fn process_message(
                     handle_close(subscriptions, addr, &subscription_id).await
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
-                    let is_admin_connection = {
-                        let auth_state = auth_state.lock().await;
-                        auth_state.is_admin
+                    let (is_admin_connection, challenge_to_send) = {
+                        let mut auth_state = auth_state.lock().await;
+                        let is_admin = auth_state.is_admin;
+                        let challenge = if !is_admin && !auth_state.challenge_sent {
+                            auth_state.challenge_sent = true;
+                            Some(auth_state.challenge.clone())
+                        } else {
+                            None
+                        };
+                        (is_admin, challenge)
                     };
+
+                    if let Some(challenge) = challenge_to_send {
+                        send_auth_challenge(sender.clone(), &challenge).await?;
+                    }
 
                     handle_event(
                         sender.clone(),
@@ -314,14 +327,6 @@ async fn websocket(socket: WebSocket, state: Arc<AppState>, addr: SocketAddr) {
         let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
             generate_auth_challenge(),
         )));
-
-        let initial_challenge = {
-            let auth_state = auth_state.lock().await;
-            auth_state.challenge.clone()
-        };
-        if let Err(e) = send_auth_challenge(sender.clone(), &initial_challenge).await {
-            tracing::warn!("failed to send initial auth challenge: {}", e);
-        }
 
         // spawn pinger
         let pinger_handle = spawn_pinger(state.clone(), sender.clone(), span_for_pinger).await;
