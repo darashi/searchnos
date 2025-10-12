@@ -1,68 +1,98 @@
 use anyhow::bail;
-use axum::extract::ws::{Message, WebSocket};
-use chrono::{DateTime, Utc};
 use futures::sink::SinkExt;
 use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
+use nostr_sdk::{Filter, JsonUtil};
+use searchnos_db::StreamItem;
 use std::collections::HashMap;
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::{watch, Mutex};
+use tokio::task::JoinHandle;
+use tracing::Instrument;
+use yawc::{frame::FrameView, WebSocket as YawcWebSocket};
 
 use crate::app_state::AppState;
-use crate::search::query::ElasticsearchQuery;
+use crate::client_addr::ClientAddr;
 
-use super::query;
-use nostr_sdk::{Filter, JsonUtil};
+pub struct SubscriptionHandle {
+    cancel: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
 
-async fn send_events(
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscription_id: &SubscriptionId,
-    events: Vec<nostr_sdk::Event>,
-) -> anyhow::Result<()> {
-    for event in events {
-        let relay_msg = RelayMessage::event(subscription_id.clone(), event);
-        sender
-            .lock()
-            .await
-            .send(Message::Text(relay_msg.as_json().into()))
-            .await?;
+impl SubscriptionHandle {
+    async fn shutdown(self) -> Result<(), tokio::task::JoinError> {
+        let _ = self.cancel.send(true);
+        self.task.await
     }
+}
 
+fn spawn_subscription_task(
+    mut subscription: searchnos_db::Subscription,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    subscription_id: SubscriptionId,
+    mut cancel_rx: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                maybe_item = subscription.next() => {
+                    match maybe_item {
+                        Some(StreamItem::Event(event_json)) => {
+                            if let Err(err) = send_event_json(&sender, &subscription_id, &event_json).await {
+                                tracing::warn!(
+                                    error = %err,
+                                    subscription = %subscription_id,
+                                    "failed to deliver subscription event"
+                                );
+                                break;
+                            }
+                        }
+                        Some(StreamItem::Eose) => {
+                            tracing::debug!(subscription = %subscription_id, "unexpected EOSE after snapshot");
+                        }
+                        None => break,
+                    }
+                }
+                result = cancel_rx.changed() => {
+                    match result {
+                        Ok(_) => {
+                            if *cancel_rx.borrow() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn make_event_message(subscription_id: &SubscriptionId, event_json: &str) -> String {
+    format!("[\"EVENT\",\"{}\",{}]", subscription_id, event_json)
+}
+
+async fn send_event_json(
+    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    subscription_id: &SubscriptionId,
+    event_json: &str,
+) -> anyhow::Result<()> {
+    let message = make_event_message(subscription_id, event_json);
+    sender.lock().await.send(FrameView::text(message)).await?;
     Ok(())
 }
+
 async fn send_eose(
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
     let relay_msg = RelayMessage::eose(subscription_id.clone());
     sender
         .lock()
         .await
-        .send(Message::Text(relay_msg.as_json().into()))
+        .send(FrameView::text(relay_msg.as_json()))
         .await?;
     Ok(())
-}
-
-async fn query_then_send(
-    state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscription_id: SubscriptionId,
-    query: query::ElasticsearchQuery,
-    cursor: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<DateTime<Utc>>> {
-    let t0 = std::time::Instant::now();
-    let (events, new_cursor) = query
-        .execute(&state.es_client, &state.index_alias_name, cursor)
-        .await?;
-    let search_time = t0.elapsed().as_millis();
-    let num_hits = events.len();
-    send_events(sender.clone(), &subscription_id, events).await?;
-
-    tracing::info!(
-        hits = num_hits,
-        elapsed_ms = search_time as u64,
-        "search results sent",
-    );
-    Ok(new_cursor)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -88,72 +118,139 @@ impl ClosedError {
 
 pub async fn handle_req(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
-    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
-    addr: SocketAddr,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
     subscription_id: &SubscriptionId,
-    filters: Vec<nostr_sdk::Filter>,
+    filters: Vec<Filter>,
 ) -> anyhow::Result<()> {
     let filter_count = filters.len();
-    let req_span = tracing::info_span!(
-        "req",
-        subscription = %subscription_id,
-        filter_count = filter_count,
-        addr = %addr
-    );
-    let _span_guard = req_span.enter();
+    let req_span = tracing::info_span!("req", subscription = %subscription_id, filter_count);
 
-    if !subscriptions.lock().await.contains_key(subscription_id) {
-        let num_ongoing_subscriptions = subscriptions.lock().await.len();
-        if num_ongoing_subscriptions + 1 > state.max_subscriptions {
+    let subscription_id = subscription_id.clone();
+    async move {
+        {
+            let guard = subscriptions.lock().await;
+            if !guard.contains_key(&subscription_id) {
+                let num_ongoing_subscriptions = guard.len();
+                if num_ongoing_subscriptions + 1 > state.max_subscriptions {
+                    bail!(ClosedError::new(
+                        subscription_id.clone(),
+                        format!(
+                            "error: too many ongoing subscriptions: {}",
+                            num_ongoing_subscriptions
+                        )
+                    ));
+                }
+            }
+        }
+
+        if filters.len() > state.max_filters {
             bail!(ClosedError::new(
                 subscription_id.clone(),
-                format!(
-                    "error: too many ongoing subscriptions: {}",
-                    num_ongoing_subscriptions
-                )
+                format!("error: too many filters: {}", filters.len())
             ));
         }
-    }
 
-    // check filter length
-    if filters.len() > state.max_filters {
-        bail!(ClosedError::new(
-            subscription_id.clone(),
-            format!("error: too many filters: {}", filters.len())
-        ));
-    }
+        let filters_json = serde_json::to_string(&filters)?;
+        let mut subscription = state.db.clone().subscribe_async(&filters_json).await?;
+        let started_at = Instant::now();
+        let mut hits = 0usize;
 
-    // do the first search
-    for filter in filters.iter() {
-        let query = ElasticsearchQuery::from_filter(filter.clone(), None);
+        loop {
+            match subscription.next().await {
+                Some(StreamItem::Event(event_json)) => {
+                    send_event_json(&sender, &subscription_id, &event_json).await?;
+                    hits += 1;
+                }
+                Some(StreamItem::Eose) => {
+                    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                    tracing::info!(hits, elapsed_ms, "search results sent");
+                    send_eose(&sender, &subscription_id).await?;
+                    break;
+                }
+                None => {
+                    tracing::warn!(subscription = %subscription_id, "subscription stream ended before EOSE");
+                    return Ok(());
+                }
+            }
+        }
 
-        query_then_send(
-            state.clone(),
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let task = spawn_subscription_task(
+            subscription,
             sender.clone(),
             subscription_id.clone(),
-            query,
-            None,
-        )
-        .await?;
+            cancel_rx,
+        );
+
+        let handle = SubscriptionHandle {
+            cancel: cancel_tx,
+            task,
+        };
+
+        let previous = {
+            let mut guard = subscriptions.lock().await;
+            guard.remove(&subscription_id)
+        };
+
+        if let Some(old_handle) = previous {
+            if let Err(err) = old_handle.shutdown().await {
+                tracing::debug!(
+                    error = %err,
+                    subscription = %subscription_id,
+                    "previous subscription task terminated with error"
+                );
+            }
+        }
+
+        {
+            let mut guard = subscriptions.lock().await;
+            guard.insert(subscription_id.clone(), handle);
+        }
+
+        Ok(())
     }
-    send_eose(sender.clone(), subscription_id).await?;
-
-    subscriptions
-        .lock()
-        .await
-        .insert(subscription_id.clone(), filters);
-
-    Ok(())
+    .instrument(req_span)
+    .await
 }
 
 pub async fn handle_close(
-    subscriptions: Arc<Mutex<HashMap<SubscriptionId, Vec<Filter>>>>,
-    addr: SocketAddr,
+    subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
+    addr: ClientAddr,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
-    tracing::info!(addr = %addr, subscription = %subscription_id, "CLOSE received");
-    subscriptions.lock().await.remove(subscription_id);
+    let remote_addr = addr.socket_addr();
+    if let Some(header) = addr.forwarded_raw() {
+        tracing::info!(
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port(),
+            forwarded = header,
+            subscription = %subscription_id,
+            "CLOSE received"
+        );
+    } else {
+        tracing::info!(
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port(),
+            subscription = %subscription_id,
+            "CLOSE received"
+        );
+    }
+
+    let handle = {
+        let mut guard = subscriptions.lock().await;
+        guard.remove(subscription_id)
+    };
+
+    if let Some(handle) = handle {
+        if let Err(err) = handle.shutdown().await {
+            tracing::debug!(
+                error = %err,
+                subscription = %subscription_id,
+                "subscription task terminated with error"
+            );
+        }
+    }
 
     Ok(())
 }

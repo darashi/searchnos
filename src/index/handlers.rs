@@ -1,308 +1,22 @@
-use axum::extract::ws::{Message, WebSocket};
-use chrono::Utc;
-use elasticsearch::{DeleteByQueryParts, Elasticsearch, IndexParts};
 use futures::sink::SinkExt;
 use nostr_sdk::prelude::*;
 use nostr_sdk::Event;
-use serde::Serialize;
-use serde_json::json;
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::app_state::AppState;
-use crate::index::indexes::{can_exist, index_name_for_event_with_policy};
-use crate::index::text::extract_text;
-
-#[derive(Debug, Serialize)]
-struct Document {
-    event: Event,
-    text: String,
-    tags: HashMap<String, HashSet<String>>,
-    identifier_tag: String,
-}
-
-fn convert_tags(tags: &[nostr_sdk::Tag]) -> HashMap<String, HashSet<String>> {
-    let mut tag: HashMap<String, HashSet<String>> = HashMap::new();
-
-    for t in tags {
-        let t = t.as_slice();
-        let mut it = t.iter();
-        let tag_kind = it.next();
-        let first_tag_value = it.next();
-        if let (Some(tag_kind), Some(first_tag_value)) = (tag_kind, first_tag_value) {
-            if tag_kind.len() != 1 {
-                continue; // index only 1-char tags; See NIP-12
-            }
-
-            if let Some(values) = tag.get_mut(tag_kind) {
-                values.insert(first_tag_value.clone());
-            } else {
-                let mut hs = HashSet::new();
-                hs.insert(first_tag_value.clone());
-                tag.insert(tag_kind.to_string(), hs);
-            }
-        }
-    }
-
-    tag
-}
-
-async fn delete_replaceable_event(
-    es_client: &Elasticsearch,
-    alias_name: &str,
-    event: &Event,
-) -> anyhow::Result<()> {
-    let res = es_client
-        .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
-        .body(json!({
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "term": {
-                                "event.pubkey": event.pubkey.to_string()
-                            }
-                        },
-                        {
-                            "term": {
-                                "event.kind": event.kind
-                            }
-                        },
-                        {
-                            "range": {
-                                "event.created_at": {
-                                    "lt": event.created_at.to_string()
-                                }
-                            }
-                        }
-                    ]
-                }
-            }
-        }))
-        .send()
-        .await?;
-    if !res.status_code().is_success() {
-        let status_code = res.status_code();
-        let body = res.text().await?;
-        return Err(anyhow::anyhow!(
-            "failed to delete; received {}, {}",
-            status_code,
-            body
-        ));
-    }
-    let response_body = res.json::<serde_json::Value>().await?;
-    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
-    tracing::info!(
-        kind = event.kind.as_u16(),
-        pubkey = %event.pubkey,
-        deleted = deleted,
-        "deleted replaceable events"
-    );
-    Ok(())
-}
-
-fn extract_identifier_tag(tags: &[Tag]) -> String {
-    tags.iter()
-        .find_map(|tag| {
-            if let Some(TagStandard::Identifier(tag)) = tag.as_standardized() {
-                Some(tag.to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default()
-}
-
-async fn delete_parameterized_replaceable_event(
-    es_client: &Elasticsearch,
-    alias_name: &str,
-    event: &Event,
-) -> anyhow::Result<()> {
-    let identifier_tag = extract_identifier_tag(event.tags.as_ref());
-    let res = es_client
-        .delete_by_query(DeleteByQueryParts::Index(&[alias_name]))
-        .body(json!({
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "term": {
-                                "event.pubkey": event.pubkey.to_string()
-                            }
-                        },
-                        {
-                            "term": {
-                                "event.kind": event.kind
-                            }
-                        },
-                        {
-                            "range": {
-                                "event.created_at": {
-                                    "lt": event.created_at.to_string()
-                                }
-                            }
-                        },
-                        {
-                            "term": {
-                                "identifier_tag": identifier_tag
-                            }
-                        }
-                    ]
-                }
-            }
-        }))
-        .send()
-        .await?;
-
-    if !res.status_code().is_success() {
-        let status_code = res.status_code();
-        let body = res.text().await?;
-        return Err(anyhow::anyhow!(
-            "failed to delete; received {}, {}",
-            status_code,
-            body
-        ));
-    }
-    let response_body = res.json::<serde_json::Value>().await?;
-    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
-    tracing::info!(
-        kind = event.kind.as_u16(),
-        pubkey = %event.pubkey,
-        identifier_tag = identifier_tag,
-        deleted = deleted,
-        "deleted parameterized replaceable events"
-    );
-    Ok(())
-}
+use crate::client_addr::ClientAddr;
+use yawc::{frame::FrameView, WebSocket as YawcWebSocket};
 
 pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Result<()> {
-    let index_name = index_name_for_event_with_policy(
-        &state.index_name_prefix,
-        event,
-        &state.yearly_index_kinds,
-    )?;
-    state.tx.send(event.clone())?;
-
-    if event.kind.is_ephemeral() {
-        return Ok(());
-    }
-
-    let ok = can_exist(
-        &index_name,
-        &Utc::now(),
-        state.daily_index_ttl_days,
-        state.index_allow_future_days,
-        state.yearly_index_ttl_years,
-    )
-    .unwrap_or(false);
-    if !ok {
-        tracing::warn!("index {} is out of range; skipping", index_name);
-        return Ok(());
-    }
-
-    let es_client = &state.es_client;
-    let index_alias_name = &state.index_alias_name;
-    let id = event.id.to_hex();
-
-    let doc = Document {
-        event: event.clone(),
-        text: extract_text(event),
-        tags: convert_tags(event.tags.as_ref()),
-        identifier_tag: extract_identifier_tag(event.tags.as_ref()),
-    };
-    let res = es_client
-        .index(IndexParts::IndexId(index_name.as_str(), &id))
-        .body(doc)
-        .send()
-        .await?;
-    if !res.status_code().is_success() {
-        let status_code = res.status_code();
-        let body = res.text().await?;
-        tracing::error!("failed to index; received {}, {}", status_code, body);
-    }
-
-    if event.kind.is_replaceable() {
-        delete_replaceable_event(es_client, index_alias_name, event).await?;
-    }
-    if event.kind.is_addressable() {
-        delete_parameterized_replaceable_event(es_client, index_alias_name, event).await?;
-    }
-    if let Kind::EventDeletion = event.kind {
-        handle_deletion_event(es_client, index_alias_name, event).await?;
-    }
-
-    Ok(())
-}
-
-async fn handle_deletion_event(
-    es_client: &Elasticsearch,
-    index_alias_name: &str,
-    event: &Event,
-) -> anyhow::Result<()> {
-    let deletion_event = event;
-    let ids_to_delete = deletion_event
-        .tags
-        .iter()
-        .filter_map(|tag| match tag.as_standardized() {
-            Some(TagStandard::Event { event_id, .. }) => Some(event_id.to_hex()),
-            _ => None,
-        })
-        .collect::<Vec<String>>();
-
-    let deletion_span = tracing::info_span!(
-        "deletion_event",
-        event_id = %deletion_event.id,
-        pubkey = %deletion_event.pubkey,
-        target_count = ids_to_delete.len()
-    );
-    let _span_guard = deletion_span.enter();
-
-    tracing::info!("processing deletion request");
-    if tracing::enabled!(tracing::Level::DEBUG) && !ids_to_delete.is_empty() {
-        tracing::debug!(targets = ?ids_to_delete, "deleting targets");
-    }
-
-    let res = es_client
-        .delete_by_query(DeleteByQueryParts::Index(&[index_alias_name]))
-        .body(json!({
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "terms": {
-                                "_id": ids_to_delete
-                            },
-                        },
-                        {
-                            "term": {
-                                "event.pubkey": deletion_event.pubkey.to_string()
-                            },
-                        }
-                    ]
-                }
-            }
-        }))
-        .send()
-        .await?;
-
-    if !res.status_code().is_success() {
-        let status_code = res.status_code();
-        let body = res.text().await?;
-        tracing::error!("failed to delete; received {}, {}", status_code, body);
-        return Err(anyhow::anyhow!("failed to delete"));
-    }
-
-    let response_body = res.json::<serde_json::Value>().await?;
-    let deleted = response_body["deleted"].as_i64().unwrap_or_default();
-    tracing::info!(deleted = deleted, "deleted events for requesting pubkey");
-
+    let db = state.db.clone();
+    let raw = event.as_json();
+    tokio::task::spawn_blocking(move || db.insert_event_json_owned(raw)).await??;
     Ok(())
 }
 
 pub async fn send_ok(
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
     event: &Event,
     status: bool,
     message: &str,
@@ -311,25 +25,42 @@ pub async fn send_ok(
     sender
         .lock()
         .await
-        .send(Message::Text(relay_msg.as_json().into()))
+        .send(FrameView::text(relay_msg.as_json()))
         .await?;
     Ok(())
 }
 
 pub async fn handle_event(
-    sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
     state: Arc<AppState>,
-    _addr: SocketAddr,
+    addr: ClientAddr,
     event: &nostr_sdk::Event,
     is_admin_connection: bool,
 ) -> anyhow::Result<()> {
-    let event_span = tracing::info_span!(
-        "event",
-        id = %event.id,
-        kind = event.kind.as_u16(),
-        pubkey = %event.pubkey,
-        admin = is_admin_connection
-    );
+    let remote_addr = addr.socket_addr();
+    let forwarded_header = addr.forwarded_raw().map(str::to_owned);
+    let event_span = if let Some(ref header) = forwarded_header {
+        tracing::info_span!(
+            "event",
+            id = %event.id,
+            kind = event.kind.as_u16(),
+            pubkey = %event.pubkey,
+            admin = is_admin_connection,
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port(),
+            forwarded = header.as_str()
+        )
+    } else {
+        tracing::info_span!(
+            "event",
+            id = %event.id,
+            kind = event.kind.as_u16(),
+            pubkey = %event.pubkey,
+            admin = is_admin_connection,
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port()
+        )
+    };
     let _span_guard = event_span.enter();
 
     if let Err(e) = event.verify() {
@@ -357,35 +88,5 @@ pub async fn handle_event(
             tracing::error!(error = %e, "failed to handle event");
             send_ok(sender, event, false, "error: failed to handle EVENT").await
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use nostr_sdk::Tag;
-
-    use crate::index::handlers::extract_identifier_tag;
-
-    #[test]
-    fn test_identifier_tag() {
-        assert_eq!(
-            extract_identifier_tag(&[Tag::identifier("hello")]),
-            "hello".to_string()
-        );
-
-        assert_eq!(
-            extract_identifier_tag(&[Tag::identifier("foo"), Tag::identifier("bar")]),
-            "foo".to_string()
-        );
-
-        assert_eq!(extract_identifier_tag(&[]), "".to_string());
-        assert_eq!(
-            extract_identifier_tag(&[Tag::identifier("")]),
-            "".to_string()
-        );
-        assert_eq!(
-            extract_identifier_tag(&[Tag::hashtag("hello")]),
-            "".to_string()
-        );
     }
 }

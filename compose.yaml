@@ -1,60 +1,26 @@
 ---
 services:
-  es:
-    build: ./docker/es
-    container_name: searchnos-es
-    environment:
-      - "discovery.type=single-node"
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "ELASTIC_PASSWORD=${ELASTIC_PASSWORD}"
-      - "http.cors.enabled=true"
-      - 'http.cors.allow-origin="*"'
-      - "xpack.security.http.ssl.enabled=false"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    ports:
-      - 9200:9200
-    volumes:
-      - es-data:/usr/share/elasticsearch/data
-    restart: always
-
-
-  indexer:
-    build:
-      context: .
-      dockerfile: ./docker/indexer/Dockerfile
-    container_name: searchnos-indexer
-    environment:
-      - SRC_RELAYS=${SRC_RELAYS}
-      - DEST_RELAYS=ws://searchnos:3000
-      - INDEXER_SECRET_KEY=${INDEXER_SECRET_KEY}
-    restart: always
-    depends_on:
-      searchnos:
-        condition: service_started
-
   searchnos:
     build:
       context: .
       dockerfile: ./docker/searchnos/Dockerfile
     container_name: searchnos
     environment:
-      - ES_URL=http://elastic:${ELASTIC_PASSWORD}@es:9200
       - PORT=3000
       - ADMIN_PUBKEYS=${ADMIN_PUBKEYS}
       - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
-      - DAILY_INDEX_TTL=${DAILY_INDEX_TTL}
-      - YEARLY_INDEX_KINDS=${YEARLY_INDEX_KINDS}
-      - YEARLY_INDEX_TTL=${YEARLY_INDEX_TTL}
+      - SRC_RELAYS=${SRC_RELAYS}
+      - FETCH_KINDS=${FETCH_KINDS}
+      - SEARCHNOS_DB_PATH=/data
+      - SEARCHNOS_DB_BATCH_SIZE=${SEARCHNOS_DB_BATCH_SIZE:-4096}
+      - SEARCHNOS_DB_FLUSH_INTERVAL_MS=${SEARCHNOS_DB_FLUSH_INTERVAL_MS:-100}
+      - SEARCHNOS_DB_PURGE=${SEARCHNOS_DB_PURGE:-90d,0:1y,40:1y,41:1y,30023:1y}
     restart: always
-    depends_on:
-      es:
-        condition: service_healthy
     ports:
       - 3000:3000
+    volumes:
+      - searchnos-db-data:/data
 
 volumes:
-  es-data:
+  searchnos-db-data:
     driver: local
