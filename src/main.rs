@@ -847,7 +847,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
 fn init_tracing() {
     let _ = tracing_log::LogTracer::init();
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .without_time()
@@ -856,7 +856,7 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env::set_var("RUST_LOG", "info");
+    env::set_var("RUST_LOG", "debug");
     init_tracing();
     let Cli { common, command } = Cli::parse();
     match command {

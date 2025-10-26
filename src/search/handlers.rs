@@ -2,10 +2,10 @@ use anyhow::bail;
 use futures::sink::SinkExt;
 use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use nostr_sdk::{Filter, JsonUtil};
-use searchnos_db::StreamItem;
+use searchnos_db::{PlanSource, QueryStats, StreamItem, SubscriptionWithStats};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
@@ -95,6 +95,63 @@ async fn send_eose(
     Ok(())
 }
 
+fn log_query_profile(filters_json: &str, stats: &QueryStats) {
+    let total_candidates: usize = stats
+        .filters
+        .iter()
+        .map(|filter| filter.candidate_count)
+        .sum();
+
+    let filter_details = stats
+        .filters
+        .iter()
+        .enumerate()
+        .map(|(index, filter_stats)| {
+            format!(
+                "#{}:{} matched={} candidates={} index_ms={} post_ms={}",
+                index,
+                describe_plan_source(&filter_stats.plan.source),
+                filter_stats.matched_event_count,
+                filter_stats.candidate_count,
+                duration_to_ms(filter_stats.index_scan_duration),
+                duration_to_ms(filter_stats.post_processing_duration)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    tracing::debug!(
+        filters = %filters_json,
+        db_elapsed_ms = duration_to_ms(stats.total_elapsed),
+        index_scan_ms = duration_to_ms(stats.index_scan_duration),
+        post_processing_ms = duration_to_ms(stats.post_processing_duration),
+        filter_count = stats.filters.len(),
+        candidate_count = total_candidates,
+        filter_details = %filter_details,
+        "query profile"
+    );
+}
+
+fn describe_plan_source(source: &PlanSource) -> String {
+    match source {
+        PlanSource::EventIds { ids } => format!("event_ids(count={})", ids.len()),
+        PlanSource::NgramSearch { terms } => format!("ngram_search(terms={})", terms.len()),
+        PlanSource::PubkeyKinds { pubkeys, kinds } => format!(
+            "pubkey_kinds(pubkeys={}, kinds={})",
+            pubkeys.len(),
+            kinds.len()
+        ),
+        PlanSource::Tags { entries } => format!("tags(entries={})", entries.len()),
+        PlanSource::Authors { pubkeys } => format!("authors(count={})", pubkeys.len()),
+        PlanSource::Kinds { kinds } => format!("kinds(count={})", kinds.len()),
+        PlanSource::CreatedAt => "created_at".to_string(),
+    }
+}
+
+fn duration_to_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(thiserror::Error, Debug)]
 pub struct ClosedError {
     pub subscription_id: SubscriptionId,
@@ -153,7 +210,14 @@ pub async fn handle_req(
 
         let filters_json = serde_json::to_string(&filters)?;
         let started_at = Instant::now();
-        let mut subscription = state.db.clone().subscribe_async(&filters_json).await?;
+        let SubscriptionWithStats {
+            mut subscription,
+            initial_query,
+        } = state
+            .db
+            .clone()
+            .subscribe_async_with_stats(&filters_json)
+            .await?;
         let mut hits = 0usize;
 
         loop {
@@ -163,8 +227,16 @@ pub async fn handle_req(
                     hits += 1;
                 }
                 Some(StreamItem::Eose) => {
-                    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-                    tracing::info!(filters = %filters_json, hits, elapsed_ms, "search results sent");
+                    let elapsed_ms = duration_to_ms(started_at.elapsed());
+                    tracing::info!(
+                        filters = %filters_json,
+                        filter_count = initial_query.filters.len(),
+                        hits,
+                        elapsed_ms,
+                        db_elapsed_ms = duration_to_ms(initial_query.total_elapsed),
+                        "search results sent"
+                    );
+                    log_query_profile(&filters_json, &initial_query);
                     send_eose(&sender, &subscription_id).await?;
                     break;
                 }
