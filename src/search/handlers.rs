@@ -152,8 +152,8 @@ pub async fn handle_req(
         }
 
         let filters_json = serde_json::to_string(&filters)?;
-        let mut subscription = state.db.clone().subscribe_async(&filters_json).await?;
         let started_at = Instant::now();
+        let mut subscription = state.db.clone().subscribe_async(&filters_json).await?;
         let mut hits = 0usize;
 
         loop {
