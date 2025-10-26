@@ -164,7 +164,7 @@ pub async fn handle_req(
                 }
                 Some(StreamItem::Eose) => {
                     let elapsed_ms = started_at.elapsed().as_millis() as u64;
-                    tracing::info!(hits, elapsed_ms, "search results sent");
+                    tracing::info!(filters = %filters_json, hits, elapsed_ms, "search results sent");
                     send_eose(&sender, &subscription_id).await?;
                     break;
                 }
