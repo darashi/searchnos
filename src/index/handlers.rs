@@ -3,6 +3,7 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::Event;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
@@ -61,32 +62,34 @@ pub async fn handle_event(
             remote_port = remote_addr.port()
         )
     };
-    let _span_guard = event_span.enter();
-
-    if let Err(e) = event.verify() {
-        tracing::warn!(error = %e, "signature verification failed");
-        return Err(e.into());
-    }
-
-    if !is_admin_connection {
-        tracing::info!("blocked: authentication required");
-        return send_ok(sender, event, false, "restricted: authentication required").await;
-    }
-
-    // NIP-70: Check for protected event
-    if event.is_protected() {
-        tracing::info!("blocked: protected event (NIP-70)");
-        return send_ok(sender, event, false, "blocked: protected event").await;
-    }
-
-    match handle_update(state, event).await {
-        Ok(_) => {
-            tracing::info!("accepted");
-            send_ok(sender, event, true, "").await
+    async move {
+        if let Err(e) = event.verify() {
+            tracing::warn!(error = %e, "signature verification failed");
+            return Err(e.into());
         }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to handle event");
-            send_ok(sender, event, false, "error: failed to handle EVENT").await
+
+        if !is_admin_connection {
+            tracing::info!("blocked: authentication required");
+            return send_ok(sender, event, false, "restricted: authentication required").await;
+        }
+
+        // NIP-70: Check for protected event
+        if event.is_protected() {
+            tracing::info!("blocked: protected event (NIP-70)");
+            return send_ok(sender, event, false, "blocked: protected event").await;
+        }
+
+        match handle_update(state, event).await {
+            Ok(_) => {
+                tracing::info!("accepted");
+                send_ok(sender, event, true, "").await
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to handle event");
+                send_ok(sender, event, false, "error: failed to handle EVENT").await
+            }
         }
     }
+    .instrument(event_span)
+    .await
 }
