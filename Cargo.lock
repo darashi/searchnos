@@ -1125,7 +1125,7 @@ dependencies = [
 [[package]]
 name = "ndb"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db.git#6e53f7ce8e925020a19af3a04809f3512d7a7961"
+source = "git+https://github.com/darashi/searchnos-db.git#7c8c928ec753f5bc8d883a70f4bbcc93a3336211"
 dependencies = [
  "hex",
  "serde",
@@ -1615,7 +1615,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db.git#6e53f7ce8e925020a19af3a04809f3512d7a7961"
+source = "git+https://github.com/darashi/searchnos-db.git#7c8c928ec753f5bc8d883a70f4bbcc93a3336211"
 dependencies = [
  "clap",
  "futures-core",
@@ -1625,24 +1625,13 @@ dependencies = [
  "lmdb-sys",
  "ndb",
  "rayon",
- "secp256k1 0.28.2",
+ "secp256k1 0.31.1",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.17",
  "tokio",
  "unicode-normalization",
-]
-
-[[package]]
-name = "secp256k1"
-version = "0.28.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d24b59d129cdadea20aea4fb2352fa053712e5d713eee47d700cd4b2bc002f10"
-dependencies = [
- "rand 0.8.5",
- "secp256k1-sys 0.9.2",
- "serde",
 ]
 
 [[package]]
@@ -1657,12 +1646,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "secp256k1-sys"
-version = "0.9.2"
+name = "secp256k1"
+version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5d1746aae42c19d583c3c1a8c646bfad910498e2051c551a7f2e3c0c9fbb7eb"
+checksum = "2c3c81b43dc2d8877c216a3fccf76677ee1ebccd429566d3e67447290d0c42b2"
 dependencies = [
- "cc",
+ "bitcoin_hashes 0.14.0",
+ "rand 0.9.2",
+ "secp256k1-sys 0.11.0",
+ "serde",
 ]
 
 [[package]]
@@ -1670,6 +1662,15 @@ name = "secp256k1-sys"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "secp256k1-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcb913707158fadaf0d8702c2db0e857de66eb003ccfdda5924b5f5ac98efb38"
 dependencies = [
  "cc",
 ]
