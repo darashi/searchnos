@@ -1120,7 +1120,7 @@ dependencies = [
 [[package]]
 name = "ndb"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db.git#ecd86f73ddd672d02daff3f30101d47d7c4940db"
+source = "git+https://github.com/darashi/searchnos-db.git#4ebfaf1da1c778d5312e7267cbab7cc703edcfc9"
 dependencies = [
  "hex",
  "serde",
@@ -1610,7 +1610,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db.git#ecd86f73ddd672d02daff3f30101d47d7c4940db"
+source = "git+https://github.com/darashi/searchnos-db.git#4ebfaf1da1c778d5312e7267cbab7cc703edcfc9"
 dependencies = [
  "clap",
  "futures-core",
