@@ -153,21 +153,12 @@ async fn process_message(
             match client_message {
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
-                    filter,
-                } => {
-                    handle_req(
-                        state.clone(),
-                        sender.clone(),
-                        subscriptions.clone(),
-                        &subscription_id,
-                        vec![filter.into_owned()],
-                    )
-                    .await
-                }
-                nostr_sdk::ClientMessage::ReqMultiFilter {
-                    subscription_id,
                     filters,
                 } => {
+                    let filters = filters
+                        .into_iter()
+                        .map(|filter| filter.into_owned())
+                        .collect::<Vec<_>>();
                     handle_req(
                         state.clone(),
                         sender.clone(),
