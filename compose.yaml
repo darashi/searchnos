@@ -3,7 +3,7 @@ services:
   searchnos:
     build:
       context: .
-      dockerfile: ./docker/searchnos/Dockerfile
+      dockerfile: ./docker/Dockerfile
     container_name: searchnos
     environment:
       - PORT=3000
