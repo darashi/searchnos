@@ -18,6 +18,7 @@ use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::index::handlers::{handle_event, send_ok};
+use searchnos::plugin::WritePolicyPlugin;
 use searchnos::search::handlers::{handle_close, handle_req, ClosedError, SubscriptionHandle};
 use searchnos_db::{PurgePolicy as DbPurgePolicy, SearchnosDB, SearchnosDBOptions};
 use std::collections::{HashMap, HashSet};
@@ -120,8 +121,7 @@ fn spawn_purge_worker(db: Arc<SearchnosDB>) {
 struct ConnectionAuthState {
     challenge: String,
     challenge_sent: bool,
-    is_admin: bool,
-    authenticated_pubkey: Option<PublicKey>,
+    authenticated_pubkeys: std::collections::BTreeSet<PublicKey>,
 }
 
 impl ConnectionAuthState {
@@ -129,9 +129,25 @@ impl ConnectionAuthState {
         Self {
             challenge,
             challenge_sent: false,
-            is_admin: false,
-            authenticated_pubkey: None,
+            authenticated_pubkeys: std::collections::BTreeSet::new(),
         }
+    }
+
+    fn authenticated_pubkeys(&self) -> Vec<PublicKey> {
+        self.authenticated_pubkeys.iter().cloned().collect()
+    }
+
+    fn ensure_challenge(&mut self) -> String {
+        if !self.challenge_sent {
+            self.challenge_sent = true;
+        }
+        self.challenge.clone()
+    }
+
+    fn register_authenticated_pubkey(&mut self, pubkey: PublicKey) {
+        self.authenticated_pubkeys.insert(pubkey);
+        self.challenge = generate_auth_challenge();
+        self.challenge_sent = false;
     }
 }
 
@@ -172,30 +188,42 @@ async fn process_message(
                     handle_close(subscriptions.clone(), addr.clone(), &subscription_id).await
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
-                    let (is_admin_connection, challenge_to_send) = {
+                    let (challenge_to_send, authenticated_pubkeys) = {
                         let mut auth_state = auth_state.lock().await;
-                        let is_admin = auth_state.is_admin;
-                        let challenge = if !is_admin && !auth_state.challenge_sent {
-                            auth_state.challenge_sent = true;
-                            Some(auth_state.challenge.clone())
+                        let authed_pubkeys = auth_state.authenticated_pubkeys();
+                        let challenge = if authed_pubkeys.is_empty() && !auth_state.challenge_sent {
+                            Some(auth_state.ensure_challenge())
                         } else {
                             None
                         };
-                        (is_admin, challenge)
+                        (challenge, authed_pubkeys)
                     };
 
                     if let Some(challenge) = challenge_to_send {
                         send_auth_challenge(sender.clone(), &challenge).await?;
                     }
 
-                    handle_event(
+                    let authenticated_pubkeys_hex: Vec<String> = authenticated_pubkeys
+                        .iter()
+                        .map(|pk| pk.to_string())
+                        .collect();
+
+                    let should_send_auth = handle_event(
                         sender.clone(),
                         state.clone(),
                         addr.clone(),
                         &event,
-                        is_admin_connection,
+                        authenticated_pubkeys_hex,
                     )
                     .await?;
+
+                    if should_send_auth {
+                        let challenge = {
+                            let mut auth_state = auth_state.lock().await;
+                            auth_state.ensure_challenge()
+                        };
+                        send_auth_challenge(sender.clone(), &challenge).await?;
+                    }
 
                     Ok(())
                 }
@@ -314,32 +342,17 @@ async fn handle_auth_message(
         return Ok(());
     }
 
-    let is_authorized_pubkey = state.admin_pubkeys.contains(&event.pubkey);
-
-    {
+    let authed_count = {
         let mut auth_state = auth_state.lock().await;
-        if !auth_state.is_admin {
-            auth_state.authenticated_pubkey = Some(event.pubkey);
-        }
-    }
+        auth_state.register_authenticated_pubkey(event.pubkey);
+        auth_state.authenticated_pubkeys.len()
+    };
+
     tracing::info!(
         auth_pubkey = %npub,
-        admin = is_authorized_pubkey,
+        total_authenticated_pubkeys = authed_count,
         "nip42 authentication verified"
     );
-
-    if !is_authorized_pubkey {
-        tracing::warn!("authentication attempt with unauthorized pubkey {}", npub);
-        send_notice(sender.clone(), "auth: unauthorized pubkey").await?;
-        return Ok(());
-    }
-
-    {
-        let mut auth_state = auth_state.lock().await;
-        auth_state.is_admin = true;
-    }
-
-    tracing::info!("authenticated successfully as {}", npub);
     send_ok(sender.clone(), &event, true, "").await?;
 
     Ok(())
@@ -462,23 +475,23 @@ async fn websocket(
         }
 
         pinger_handle.abort();
-        let (was_admin, authed_pubkey) = {
+        let authed_pubkeys = {
             let auth_state = auth_state.lock().await;
-            (auth_state.is_admin, auth_state.authenticated_pubkey)
+            auth_state.authenticated_pubkeys()
         };
-        match authed_pubkey {
-            Some(pubkey) => {
-                let npub = pubkey.to_bech32().unwrap_or_else(|_| pubkey.to_string());
-                tracing::info!(
-                    auth_pubkey = %npub,
-                    admin = was_admin,
-                    active_connections,
-                    "disconnected"
-                );
-            }
-            None => {
-                tracing::info!(admin = was_admin, active_connections, "disconnected");
-            }
+        if authed_pubkeys.is_empty() {
+            tracing::info!(active_connections, "disconnected");
+        } else {
+            let authed_list = authed_pubkeys
+                .iter()
+                .map(|pk| pk.to_bech32().unwrap_or_else(|_| pk.to_string()))
+                .collect::<Vec<_>>()
+                .join(",");
+            tracing::info!(
+                authenticated_pubkeys = authed_list.as_str(),
+                active_connections,
+                "disconnected"
+            );
         }
     }
     .instrument(connection_span)
@@ -630,15 +643,6 @@ struct ServeArgs {
     )]
     db_flush_interval_ms: u64,
 
-    /// Comma-separated list of admin public keys allowed to publish events
-    #[arg(
-        long = "admin-pubkeys",
-        env = "ADMIN_PUBKEYS",
-        value_delimiter = ',',
-        num_args = 0..
-    )]
-    admin_pubkeys: Vec<PublicKey>,
-
     /// Public relay URL used to validate AUTH events (optional)
     #[arg(long = "public-relay-url", env = "PUBLIC_RELAY_URL")]
     public_relay_url: Option<String>,
@@ -685,6 +689,18 @@ struct ServeArgs {
     /// Use Forwarded header when logging client addresses
     #[arg(long = "respect-forwarded", env = "SEARCHNOS_RESPECT_FORWARDED")]
     respect_forwarded_headers: bool,
+
+    /// Command executed for the write policy plugin
+    #[arg(
+        long = "write-policy-plugin",
+        env = "WRITE_POLICY_PLUGIN",
+        value_name = "CMD"
+    )]
+    write_policy_plugin: Option<String>,
+
+    /// When set, reject all EVENT messages before invoking the plugin
+    #[arg(long = "block-event-message", env = "BLOCK_EVENT_MESSAGE")]
+    block_event_message: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -788,14 +804,6 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
     relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info).unwrap();
 
-    let admin_pubkeys: HashSet<PublicKey> = args.admin_pubkeys.iter().copied().collect();
-
-    if admin_pubkeys.is_empty() {
-        tracing::warn!("No admin pubkeys configured; skipping admin auth checks");
-    } else {
-        tracing::info!("Configured {} admin pubkey(s)", admin_pubkeys.len());
-    }
-
     let public_relay_url = match &args.public_relay_url {
         Some(url) => {
             let url = url.trim();
@@ -808,16 +816,30 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
         None => None,
     };
 
+    let write_policy_plugin = args
+        .write_policy_plugin
+        .as_ref()
+        .map(|cmd| cmd.trim())
+        .filter(|cmd| !cmd.is_empty());
+    let write_policy_plugin = if let Some(command) = write_policy_plugin {
+        tracing::info!(command = %command, "write policy plugin configured");
+        Some(Arc::new(WritePolicyPlugin::new(command.to_string())?))
+    } else {
+        tracing::info!("write policy plugin disabled");
+        None
+    };
+
     let app_state = Arc::new(AppState {
         db,
         relay_info,
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
-        admin_pubkeys,
         public_relay_url,
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
+        write_policy_plugin,
+        block_event_message: args.block_event_message,
     });
 
     if !src_relays.is_empty() {
@@ -1006,13 +1028,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn args_allow_missing_admin_pubkeys() {
-        std::env::remove_var("ADMIN_PUBKEYS");
-        let res = Cli::try_parse_from(["searchnos", "serve"]);
-        assert!(res.is_ok());
-    }
-
     fn find_available_port() -> std::io::Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
@@ -1031,7 +1046,6 @@ mod tests {
             }
             Err(err) => panic!("failed to find available port: {err}"),
         };
-        let admin_pubkey = nostr_sdk::Keys::generate().public_key();
         let db_path = std::env::temp_dir()
             .join(format!("searchnos-db-test-{}", port))
             .display()
@@ -1043,7 +1057,6 @@ mod tests {
             port,
             db_batch_size: 4_096,
             db_flush_interval_ms: 100,
-            admin_pubkeys: vec![admin_pubkey],
             public_relay_url: None,
             src_relays: Vec::new(),
             fetch_kinds: Vec::new(),
@@ -1052,6 +1065,8 @@ mod tests {
             ping_interval: 55,
             db_purge: None,
             respect_forwarded_headers: false,
+            write_policy_plugin: None,
+            block_event_message: false,
         };
         let app = app(&common, &args).await.unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));

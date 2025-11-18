@@ -7,7 +7,6 @@ services:
     container_name: searchnos
     environment:
       - PORT=3000
-      - ADMIN_PUBKEYS=${ADMIN_PUBKEYS}
       - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
       - SRC_RELAYS=${SRC_RELAYS}
       - FETCH_KINDS=${FETCH_KINDS}

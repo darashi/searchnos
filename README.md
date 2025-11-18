@@ -40,7 +40,6 @@ See `compose.yaml` and `.env.example` for the configuration.
 
 `SRC_RELAYS` and `FETCH_KINDS` can be a comma-separated list.
 
-- `ADMIN_PUBKEYS`: comma-separated list of admin public keys (hex or `npub`). Only these keys can authenticate via NIP-42 to publish events.
 - `PUBLIC_RELAY_URL` (optional): canonical relay URL used to validate `relay` tags in AUTH events (e.g. `wss://searchnos.example.com`).
 - `SRC_RELAYS` (optional): comma-separated list of source relay URLs to fetch events from.
 - `FETCH_KINDS` (optional): comma-separated list of numeric event kinds to fetch. When unset but `SRC_RELAYS` is provided, a default set matching the NIP-50 indexer is used (`0,1,5,30023,40,41,42,43,44`).
@@ -49,6 +48,17 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `SEARCHNOS_DB_FLUSH_INTERVAL_MS`: maximum time in milliseconds to wait before flushing pending events (default `100`).
 - `SEARCHNOS_DB_PURGE` (optional): purge specifications applied to the database. Leave unset to keep events indefinitely. Example: `SEARCHNOS_DB_PURGE=90d,0:1y,40:1y,41:1y,30023:1y` keeps kinds `0`, `40`, `41`, and `30023` for one year and everything else for 90 days.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
+- `WRITE_POLICY_PLUGIN` (optional): command that implements the write policy plugin; it is compatible with the strfry relay plugin system. `EVENT` submissions always go through the plugin, and each request includes searchnos-specific NIP-42 extensions (documented below) so the plugin can enforce authentication-aware policies.
+- `BLOCK_EVENT_MESSAGE` (optional): when set (or `--block-event-message` is passed to the CLI), all `EVENT` messages are rejected before any plugin logic executes. This is useful when the relay should operate in read-only/search-only mode.
+
+### Write policy plugin extensions
+
+Write policy plugins follow the strfry plugin protocol with two additional fields that enable NIP-42-aware policies:
+
+* Input messages include `authenticatedPubkeys`, an array of hex-encoded public keys that already completed a NIP-42 authentication flow on the current connection. When no keys have authenticated yet, the array is empty.
+* Plugins can return an `action` of `rejectAndChallenge` (in addition to strfry's `accept`, `reject`, and `shadowReject`). When a plugin responds with `rejectAndChallenge`, searchnos replies to the client with the optional `msg`, marks the write as rejected, and immediately sends a fresh AUTH challenge so the client can authenticate before retrying.
+
+See `plugins.md` for the full plugin specification and examples.
 
 ## Static build
 
