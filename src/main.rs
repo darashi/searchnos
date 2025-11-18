@@ -829,6 +829,10 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
         None
     };
 
+    if args.block_event_message {
+        tracing::info!("EVENT messages blocked by configuration");
+    }
+
     let app_state = Arc::new(AppState {
         db,
         relay_info,
