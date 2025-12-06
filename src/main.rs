@@ -666,7 +666,7 @@ struct ServeArgs {
     fetch_kinds: Vec<String>,
 
     /// Maximum number of subscriptions per client
-    #[arg(long, env, default_value_t = 8)]
+    #[arg(long, env, default_value_t = 20)]
     max_subscriptions: usize,
 
     /// Maximum number of filters per subscription
