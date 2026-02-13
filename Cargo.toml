@@ -20,7 +20,7 @@ thiserror = "2.0.16"
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-searchnos-db = { git = "https://github.com/darashi/searchnos-db.git" }
+searchnos-db = { git = "https://github.com/darashi/searchnos-db" }
 indicatif = "0.18"
 chrono = "0.4"
 yawc = { version = "0.2.7", features = ["axum"] }
