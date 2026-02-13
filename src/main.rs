@@ -91,9 +91,19 @@ fn parse_fetch_kinds(values: &[String]) -> anyhow::Result<Vec<Kind>> {
 
 fn spawn_purge_worker(db: Arc<SearchnosDB>) {
     tokio::spawn(async move {
-        let mut ticker = time::interval(Duration::from_secs(DB_PURGE_TICK_INTERVAL_SECS));
+        let tick_interval = Duration::from_secs(DB_PURGE_TICK_INTERVAL_SECS);
+        let mut ticker = time::interval(tick_interval);
+        let mut run_id: u64 = 0;
         loop {
             ticker.tick().await;
+            run_id = run_id.saturating_add(1);
+            let started_at = std::time::Instant::now();
+            tracing::info!(
+                run_id,
+                batch_size = DB_PURGE_BATCH_SIZE,
+                tick_interval_secs = DB_PURGE_TICK_INTERVAL_SECS,
+                "starting purge run"
+            );
 
             let db_for_run = db.clone();
             match tokio::task::spawn_blocking(move || {
@@ -102,9 +112,12 @@ fn spawn_purge_worker(db: Arc<SearchnosDB>) {
             .await
             {
                 Ok(Ok(removed)) => {
-                    if removed > 0 {
-                        tracing::info!(removed, "purged stale events from database");
-                    }
+                    tracing::info!(
+                        run_id,
+                        removed,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "purge run completed"
+                    );
                 }
                 Ok(Err(err)) => {
                     tracing::error!(error = %err, "failed to purge stale events");
