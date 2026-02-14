@@ -95,7 +95,7 @@ async fn send_eose(
     Ok(())
 }
 
-fn log_query_profile(filters_json: &str, stats: &QueryStats) {
+fn log_query_profile(stats: &QueryStats) {
     let total_candidates: usize = stats
         .filters
         .iter()
@@ -121,7 +121,6 @@ fn log_query_profile(filters_json: &str, stats: &QueryStats) {
         .join(" | ");
 
     tracing::debug!(
-        filters = %filters_json,
         db_elapsed_ms = duration_to_ms(stats.total_elapsed),
         index_scan_ms = duration_to_ms(stats.index_scan_duration),
         post_processing_ms = duration_to_ms(stats.post_processing_duration),
@@ -236,7 +235,7 @@ pub async fn handle_req(
                         db_elapsed_ms = duration_to_ms(initial_query.total_elapsed),
                         "search results sent"
                     );
-                    log_query_profile(&filters_json, &initial_query);
+                    log_query_profile(&initial_query);
                     send_eose(&sender, &subscription_id).await?;
                     break;
                 }
