@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use nostr_sdk::{Client, Filter, Keys, Kind, RelayPoolNotification, RelayUrl};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
 use crate::app_state::AppState;
@@ -44,9 +45,15 @@ async fn run_fetcher(
     for relay in &relays {
         let url = relay.to_string();
         if let Err(err) = client.add_relay(url.clone()).await {
-            tracing::warn!(target: LOG_TARGET, relay = %url, error = %err, "failed to add source relay");
+            tracing::warn!(
+                target: LOG_TARGET,
+                relay = %url,
+                error = %err,
+                "failed to add source relay"
+            );
+        } else {
+            tracing::info!(target: LOG_TARGET, relay = %url, "relay added");
         }
-        tracing::info!(target: LOG_TARGET, relay = %url, "relay added");
     }
 
     client.connect().await;
@@ -60,7 +67,26 @@ async fn run_fetcher(
     tracing::info!(target: LOG_TARGET, "subscribed to source relays");
 
     let mut notifications = client.notifications();
-    while let Ok(notification) = notifications.recv().await {
+    loop {
+        let notification = match notifications.recv().await {
+            Ok(notification) => notification,
+            Err(RecvError::Lagged(skipped)) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    skipped,
+                    "notification consumer lagged; continuing"
+                );
+                continue;
+            }
+            Err(RecvError::Closed) => {
+                tracing::error!(
+                    target: LOG_TARGET,
+                    "notification channel closed; stopping fetcher"
+                );
+                return Err(anyhow!("notification channel closed"));
+            }
+        };
+
         match notification {
             RelayPoolNotification::Event {
                 relay_url, event, ..
@@ -89,6 +115,4 @@ async fn run_fetcher(
             }
         }
     }
-
-    Ok(())
 }
