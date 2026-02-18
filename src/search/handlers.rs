@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
-use yawc::{frame::FrameView, WebSocket as YawcWebSocket};
+use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};
 
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
@@ -28,7 +28,7 @@ impl SubscriptionHandle {
 
 fn spawn_subscription_task(
     mut subscription: searchnos_db::Subscription,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscription_id: SubscriptionId,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
@@ -73,24 +73,24 @@ fn make_event_message(subscription_id: &SubscriptionId, event_json: &str) -> Str
 }
 
 async fn send_event_json(
-    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscription_id: &SubscriptionId,
     event_json: &str,
 ) -> anyhow::Result<()> {
     let message = make_event_message(subscription_id, event_json);
-    sender.lock().await.send(FrameView::text(message)).await?;
+    sender.lock().await.send(Frame::text(message)).await?;
     Ok(())
 }
 
 async fn send_eose(
-    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscription_id: &SubscriptionId,
 ) -> anyhow::Result<()> {
     let relay_msg = RelayMessage::eose(subscription_id.clone());
     sender
         .lock()
         .await
-        .send(FrameView::text(relay_msg.as_json()))
+        .send(Frame::text(relay_msg.as_json()))
         .await?;
     Ok(())
 }
@@ -174,7 +174,7 @@ impl ClosedError {
 
 pub async fn handle_req(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
     subscription_id: &SubscriptionId,
     filters: Vec<Filter>,

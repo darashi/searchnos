@@ -13,7 +13,7 @@ use nostr_sdk::{
     prelude::{RelayInformationDocument, RelayMessage, ToBech32},
     Event, JsonUtil, Kind, PublicKey, RelayUrl,
 };
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::index::fetcher::spawn_fetcher;
@@ -32,8 +32,8 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{Instrument, Span};
 use yawc::{
-    frame::{FrameView, OpCode},
-    CompressionLevel, IncomingUpgrade, Options, WebSocket as YawcWebSocket,
+    frame::{Frame, OpCode},
+    CompressionLevel, HttpWebSocket as YawcWebSocket, IncomingUpgrade, Options,
 };
 
 fn generate_auth_challenge() -> String {
@@ -166,15 +166,15 @@ impl ConnectionAuthState {
 
 async fn process_message(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscriptions: Arc<Mutex<HashMap<nostr_sdk::SubscriptionId, SubscriptionHandle>>>,
     addr: ClientAddr,
-    msg: FrameView,
+    msg: Frame,
     auth_state: Arc<Mutex<ConnectionAuthState>>,
 ) -> anyhow::Result<()> {
-    match msg.opcode {
+    match msg.opcode() {
         OpCode::Text => {
-            let payload = msg.payload;
+            let payload = msg.into_payload();
             let text =
                 std::str::from_utf8(&payload).context("received text frame with invalid UTF-8")?;
             tracing::info!("RECEIVED {}", text);
@@ -270,33 +270,33 @@ async fn process_message(
 }
 
 async fn send_notice(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     msg: &str,
 ) -> anyhow::Result<()> {
     let notice = RelayMessage::notice(msg);
     sender
         .lock()
         .await
-        .send(FrameView::text(notice.as_json()))
+        .send(Frame::text(notice.as_json()))
         .await?;
     Ok(())
 }
 
 async fn send_auth_challenge(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     challenge: &str,
 ) -> anyhow::Result<()> {
     let auth = RelayMessage::auth(challenge.to_string());
     sender
         .lock()
         .await
-        .send(FrameView::text(auth.as_json()))
+        .send(Frame::text(auth.as_json()))
         .await?;
     Ok(())
 }
 
 async fn send_closed(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscription_id: nostr_sdk::SubscriptionId,
     msg: &str,
 ) -> anyhow::Result<()> {
@@ -304,14 +304,14 @@ async fn send_closed(
     sender
         .lock()
         .await
-        .send(FrameView::text(closed.as_json()))
+        .send(Frame::text(closed.as_json()))
         .await?;
     Ok(())
 }
 
 async fn handle_auth_message(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     event: nostr_sdk::Event,
     auth_state: Arc<Mutex<ConnectionAuthState>>,
 ) -> anyhow::Result<()> {
@@ -373,7 +373,7 @@ async fn handle_auth_message(
 
 async fn spawn_pinger(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, FrameView>>>,
+    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     span: Span,
 ) -> JoinHandle<()> {
     tokio::spawn(
@@ -384,7 +384,7 @@ async fn spawn_pinger(
                 let res = sender
                     .lock()
                     .await
-                    .send(FrameView::ping(Vec::<u8>::new()))
+                    .send(Frame::ping(Vec::<u8>::new()))
                     .await;
                 if let Err(e) = res {
                     tracing::warn!("error sending ping: {}", e);
