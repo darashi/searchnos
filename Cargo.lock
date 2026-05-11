@@ -1753,7 +1753,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db#eb9d14ed95846f72234802b51c3aeba4b5438d01"
+source = "git+https://github.com/darashi/searchnos-db#07f101a66c9909a1ff550eef09a9de17596a5385"
 dependencies = [
  "clap",
  "futures-core",
@@ -1761,6 +1761,7 @@ dependencies = [
  "indicatif",
  "lmdb",
  "lmdb-sys",
+ "memchr",
  "ndb-note-rs",
  "rayon",
  "secp256k1 0.31.1",

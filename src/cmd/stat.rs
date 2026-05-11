@@ -1,137 +1,153 @@
 use std::error::Error;
 
-use chrono::{DateTime, Utc};
-
 use crate::CommonArgs;
-use searchnos_db::SearchnosDB;
+use searchnos_db::{DatabaseStats, SearchnosDB};
 
 pub async fn run(common: CommonArgs) -> Result<(), Box<dyn Error>> {
     let db = SearchnosDB::open(&common.db_path)?;
-    let db_stats = db.database_stats()?;
-    let index_used_bytes = db_stats.iter().map(|stat| stat.total_bytes).sum::<usize>();
-    let events_total = db_stats
-        .iter()
-        .find(|stat| stat.name == "events")
-        .map(|stat| stat.count)
-        .unwrap_or(0);
-    let kind_stats = db.kind_stats()?;
+    let stats = db.database_stats()?;
 
-    println!("index_used_bytes: {}", format_number(index_used_bytes));
-    println!("kind_stats:");
-    if kind_stats.is_empty() {
-        println!("  none");
+    if stats.is_empty() {
+        println!("No databases found");
         return Ok(());
     }
 
-    let mut rows = Vec::with_capacity(kind_stats.len());
-    let mut kind_width = "kind".len();
+    print_stats_table(&stats);
+
+    Ok(())
+}
+
+fn print_stats_table(stats: &[DatabaseStats]) {
+    let name_width = stats
+        .iter()
+        .map(|stat| stat.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("name".len())
+        .max(16);
+
+    let mut formatted_rows = Vec::with_capacity(stats.len());
+    let mut total_count = 0usize;
+    let mut total_key_bytes = 0usize;
+    let mut total_value_bytes = 0usize;
+    let mut total_total_bytes = 0usize;
+
     let mut count_width = "count".len();
-    let mut oldest_width = "oldest".len();
-    let mut newest_width = "newest".len();
-    let mut total_oldest: Option<u64> = None;
-    let mut total_newest: Option<u64> = None;
+    let mut key_bytes_width = "key_bytes".len();
+    let mut value_bytes_width = "value_bytes".len();
+    let mut total_bytes_width = "total_bytes".len();
 
-    for stat in kind_stats {
-        let kind_str = stat.kind.to_string();
+    for stat in stats {
         let count_str = format_number(stat.count);
-        let oldest_str = format_datetime(stat.oldest_created_at);
-        let newest_str = format_datetime(stat.newest_created_at);
-        kind_width = kind_width.max(kind_str.len());
+        let key_bytes_str = format_number(stat.key_bytes);
+        let value_bytes_str = format_number(stat.value_bytes);
+        let total_bytes_str = format_number(stat.total_bytes);
+
         count_width = count_width.max(count_str.len());
-        oldest_width = oldest_width.max(oldest_str.len());
-        newest_width = newest_width.max(newest_str.len());
-        rows.push((kind_str, count_str, oldest_str, newest_str));
+        key_bytes_width = key_bytes_width.max(key_bytes_str.len());
+        value_bytes_width = value_bytes_width.max(value_bytes_str.len());
+        total_bytes_width = total_bytes_width.max(total_bytes_str.len());
 
-        if let Some(oldest) = stat.oldest_created_at {
-            total_oldest = Some(match total_oldest {
-                Some(current) => current.min(oldest),
-                None => oldest,
-            });
-        }
+        formatted_rows.push((
+            stat.name.clone(),
+            count_str,
+            key_bytes_str,
+            value_bytes_str,
+            total_bytes_str,
+        ));
 
-        if let Some(newest) = stat.newest_created_at {
-            total_newest = Some(match total_newest {
-                Some(current) => current.max(newest),
-                None => newest,
-            });
-        }
+        total_count += stat.count;
+        total_key_bytes += stat.key_bytes;
+        total_value_bytes += stat.value_bytes;
+        total_total_bytes += stat.total_bytes;
     }
 
-    let total_count_str = format_number(events_total);
-    let total_oldest_str = format_datetime(total_oldest);
-    let total_newest_str = format_datetime(total_newest);
-    kind_width = kind_width.max("TOTAL".len());
+    let total_count_str = format_number(total_count);
+    let total_key_bytes_str = format_number(total_key_bytes);
+    let total_value_bytes_str = format_number(total_value_bytes);
+    let total_total_bytes_str = format_number(total_total_bytes);
+
     count_width = count_width.max(total_count_str.len());
-    oldest_width = oldest_width.max(total_oldest_str.len());
-    newest_width = newest_width.max(total_newest_str.len());
+    key_bytes_width = key_bytes_width.max(total_key_bytes_str.len());
+    value_bytes_width = value_bytes_width.max(total_value_bytes_str.len());
+    total_bytes_width = total_bytes_width.max(total_total_bytes_str.len());
 
-    let kind_separator = "-".repeat(kind_width);
+    let separator = "-".repeat(name_width);
     let count_separator = "-".repeat(count_width);
-    let oldest_separator = "-".repeat(oldest_width);
-    let newest_separator = "-".repeat(newest_width);
+    let key_bytes_separator = "-".repeat(key_bytes_width);
+    let value_bytes_separator = "-".repeat(value_bytes_width);
+    let total_bytes_separator = "-".repeat(total_bytes_width);
 
     println!(
-        "  {kind:<kind_width$} {count:>count_width$} {oldest:<oldest_width$} {newest:<newest_width$}",
-        kind = "kind",
-        count = "count",
-        oldest = "oldest",
-        newest = "newest",
-        kind_width = kind_width,
+        "{:<name_width$} {:>count_width$} {:>key_bytes_width$} {:>value_bytes_width$} {:>total_bytes_width$}",
+        "name",
+        "count",
+        "key_bytes",
+        "value_bytes",
+        "total_bytes",
+        name_width = name_width,
         count_width = count_width,
-        oldest_width = oldest_width,
-        newest_width = newest_width,
+        key_bytes_width = key_bytes_width,
+        value_bytes_width = value_bytes_width,
+        total_bytes_width = total_bytes_width
     );
     println!(
-        "  {kind:<kind_width$} {count:>count_width$} {oldest:<oldest_width$} {newest:<newest_width$}",
-        kind = kind_separator,
-        count = count_separator,
-        oldest = oldest_separator,
-        newest = newest_separator,
-        kind_width = kind_width,
+        "{:<name_width$} {:>count_width$} {:>key_bytes_width$} {:>value_bytes_width$} {:>total_bytes_width$}",
+        separator,
+        count_separator,
+        key_bytes_separator,
+        value_bytes_separator,
+        total_bytes_separator,
+        name_width = name_width,
         count_width = count_width,
-        oldest_width = oldest_width,
-        newest_width = newest_width,
+        key_bytes_width = key_bytes_width,
+        value_bytes_width = value_bytes_width,
+        total_bytes_width = total_bytes_width
     );
 
-    for (kind, count, oldest, newest) in rows {
+    for (name, count, key_bytes, value_bytes, total_bytes) in &formatted_rows {
         println!(
-            "  {kind:<kind_width$} {count:>count_width$} {oldest:<oldest_width$} {newest:<newest_width$}",
-            kind = kind,
-            count = count,
-            oldest = oldest,
-            newest = newest,
-            kind_width = kind_width,
+            "{:<name_width$} {:>count_width$} {:>key_bytes_width$} {:>value_bytes_width$} {:>total_bytes_width$}",
+            name,
+            count,
+            key_bytes,
+            value_bytes,
+            total_bytes,
+            name_width = name_width,
             count_width = count_width,
-            oldest_width = oldest_width,
-            newest_width = newest_width,
+            key_bytes_width = key_bytes_width,
+            value_bytes_width = value_bytes_width,
+            total_bytes_width = total_bytes_width
         );
     }
 
     println!(
-        "  {kind:<kind_width$} {count:>count_width$} {oldest:<oldest_width$} {newest:<newest_width$}",
-        kind = kind_separator,
-        count = count_separator,
-        oldest = oldest_separator,
-        newest = newest_separator,
-        kind_width = kind_width,
+        "{:<name_width$} {:>count_width$} {:>key_bytes_width$} {:>value_bytes_width$} {:>total_bytes_width$}",
+        "-".repeat(name_width),
+        count_separator,
+        key_bytes_separator,
+        value_bytes_separator,
+        total_bytes_separator,
+        name_width = name_width,
         count_width = count_width,
-        oldest_width = oldest_width,
-        newest_width = newest_width,
+        key_bytes_width = key_bytes_width,
+        value_bytes_width = value_bytes_width,
+        total_bytes_width = total_bytes_width
     );
 
     println!(
-        "  {kind:<kind_width$} {count:>count_width$} {oldest:<oldest_width$} {newest:<newest_width$}",
-        kind = "TOTAL",
-        count = total_count_str,
-        oldest = total_oldest_str,
-        newest = total_newest_str,
-        kind_width = kind_width,
+        "{:<name_width$} {:>count_width$} {:>key_bytes_width$} {:>value_bytes_width$} {:>total_bytes_width$}",
+        "TOTAL",
+        total_count_str,
+        total_key_bytes_str,
+        total_value_bytes_str,
+        total_total_bytes_str,
+        name_width = name_width,
         count_width = count_width,
-        oldest_width = oldest_width,
-        newest_width = newest_width,
+        key_bytes_width = key_bytes_width,
+        value_bytes_width = value_bytes_width,
+        total_bytes_width = total_bytes_width
     );
-
-    Ok(())
 }
 
 fn format_number(value: usize) -> String {
@@ -145,14 +161,4 @@ fn format_number(value: usize) -> String {
         formatted.push(ch);
     }
     formatted
-}
-
-fn format_datetime(timestamp: Option<u64>) -> String {
-    match timestamp
-        .and_then(|ts| i64::try_from(ts).ok())
-        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-    {
-        Some(datetime) => datetime.to_rfc3339(),
-        None => "-".to_string(),
-    }
 }

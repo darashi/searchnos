@@ -2,7 +2,7 @@ use anyhow::bail;
 use futures::sink::SinkExt;
 use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use nostr_sdk::{Filter, JsonUtil};
-use searchnos_db::{PlanSource, QueryStats, StreamItem, SubscriptionWithStats};
+use searchnos_db::{QueryStats, StreamItem, SubscriptionWithStats};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -108,9 +108,8 @@ fn log_query_profile(stats: &QueryStats) {
         .enumerate()
         .map(|(index, filter_stats)| {
             format!(
-                "#{}:{} matched={} candidates={} index_ms={} post_ms={}",
+                "#{}:matched={} candidates={} index_ms={} post_ms={}",
                 index,
-                describe_plan_source(&filter_stats.plan.source),
                 filter_stats.matched_event_count,
                 filter_stats.candidate_count,
                 duration_to_ms(filter_stats.index_scan_duration),
@@ -129,22 +128,6 @@ fn log_query_profile(stats: &QueryStats) {
         filter_details = %filter_details,
         "query profile"
     );
-}
-
-fn describe_plan_source(source: &PlanSource) -> String {
-    match source {
-        PlanSource::EventIds { ids } => format!("event_ids(count={})", ids.len()),
-        PlanSource::NgramSearch { terms } => format!("ngram_search(terms={})", terms.len()),
-        PlanSource::PubkeyKinds { pubkeys, kinds } => format!(
-            "pubkey_kinds(pubkeys={}, kinds={})",
-            pubkeys.len(),
-            kinds.len()
-        ),
-        PlanSource::Tags { entries } => format!("tags(entries={})", entries.len()),
-        PlanSource::Authors { pubkeys } => format!("authors(count={})", pubkeys.len()),
-        PlanSource::Kinds { kinds } => format!("kinds(count={})", kinds.len()),
-        PlanSource::CreatedAt => "created_at".to_string(),
-    }
 }
 
 fn duration_to_ms(duration: Duration) -> u64 {
