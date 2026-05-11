@@ -2,11 +2,11 @@ use anyhow::bail;
 use futures::sink::SinkExt;
 use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
 use nostr_sdk::{Filter, JsonUtil};
-use searchnos_db::{QueryStats, StreamItem};
-use std::collections::{HashMap, HashSet};
+use searchnos_db::StreamItem;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};
@@ -17,12 +17,6 @@ use crate::client_addr::ClientAddr;
 pub struct SubscriptionHandle {
     cancel: watch::Sender<bool>,
     task: JoinHandle<()>,
-}
-
-enum InitialQueryItem {
-    Event(String),
-    Finished(QueryStats),
-    Failed(String),
 }
 
 impl SubscriptionHandle {
@@ -49,17 +43,16 @@ fn spawn_subscription_task(
     sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
     subscription_id: SubscriptionId,
     filters_json: String,
-    live_filters_json: String,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let started_at = Instant::now();
 
-        let live_subscription_result = tokio::select! {
-            result = state.db.clone().subscribe_async(&live_filters_json) => result,
+        let subscription_result = tokio::select! {
+            result = state.db.clone().subscribe_async(&filters_json) => result,
             _ = wait_for_cancel(&mut cancel_rx) => return,
         };
-        let mut subscription = match live_subscription_result {
+        let mut subscription = match subscription_result {
             Ok(subscription) => subscription,
             Err(err) => {
                 let message = format!("error: failed to subscribe: {err}");
@@ -74,106 +67,16 @@ fn spawn_subscription_task(
             }
         };
 
-        let (initial_tx, mut initial_rx) = mpsc::channel(32);
-        let db = state.db.clone();
-        let query_filters_json = filters_json.clone();
-        let initial_query_task = tokio::task::spawn_blocking(move || {
-            match db.stream_query_with_stats(&query_filters_json, |event_json| {
-                initial_tx
-                    .blocking_send(InitialQueryItem::Event(event_json))
-                    .is_ok()
-            }) {
-                Ok(stats) => {
-                    let _ = initial_tx.blocking_send(InitialQueryItem::Finished(stats));
-                }
-                Err(err) => {
-                    let _ = initial_tx.blocking_send(InitialQueryItem::Failed(err.to_string()));
-                }
-            }
-        });
-
         let mut hits = 0usize;
-        let mut sent_event_ids = HashSet::new();
-
-        loop {
-            tokio::select! {
-                maybe_item = initial_rx.recv() => {
-                    match maybe_item {
-                        Some(InitialQueryItem::Event(event_json)) => {
-                            if let Some(event_id) = event_id_from_json(&event_json) {
-                                sent_event_ids.insert(event_id);
-                            }
-                            if let Err(err) = send_event_json(&sender, &subscription_id, &event_json).await {
-                                tracing::warn!(
-                                    error = %err,
-                                    subscription = %subscription_id,
-                                    "failed to deliver initial query event"
-                                );
-                                return;
-                            }
-                            hits += 1;
-                        }
-                        Some(InitialQueryItem::Finished(initial_query)) => {
-                            let elapsed_ms = duration_to_ms(started_at.elapsed());
-                            tracing::info!(
-                                filters = %filters_json,
-                                filter_count = initial_query.filters.len(),
-                                hits,
-                                elapsed_ms,
-                                db_elapsed_ms = duration_to_ms(initial_query.total_elapsed),
-                                "search results sent"
-                            );
-                            log_query_profile(&initial_query);
-
-                            if let Err(err) = send_eose(&sender, &subscription_id).await {
-                                tracing::warn!(
-                                    error = %err,
-                                    subscription = %subscription_id,
-                                    "failed to deliver EOSE"
-                                );
-                                return;
-                            }
-                            break;
-                        }
-                        Some(InitialQueryItem::Failed(err)) => {
-                            let message = format!("error: failed to query subscription: {err}");
-                            if let Err(send_err) = send_closed(&sender, &subscription_id, &message).await {
-                                tracing::warn!(
-                                    error = %send_err,
-                                    subscription = %subscription_id,
-                                    "failed to deliver CLOSED"
-                                );
-                            }
-                            return;
-                        }
-                        None => {
-                            tracing::warn!(subscription = %subscription_id, "initial query stream ended before EOSE");
-                            return;
-                        }
-                    }
-                }
-                _ = wait_for_cancel(&mut cancel_rx) => return,
-            }
-        }
-
-        if let Err(err) = initial_query_task.await {
-            tracing::warn!(
-                error = %err,
-                subscription = %subscription_id,
-                "initial query task failed"
-            );
-            return;
-        }
+        let mut initial_done = false;
 
         loop {
             tokio::select! {
                 maybe_item = subscription.next() => {
                     match maybe_item {
                         Some(StreamItem::Event(event_json)) => {
-                            if let Some(event_id) = event_id_from_json(&event_json) {
-                                if !sent_event_ids.insert(event_id) {
-                                    continue;
-                                }
+                            if !initial_done {
+                                hits += 1;
                             }
                             if let Err(err) = send_event_json(&sender, &subscription_id, &event_json).await {
                                 tracing::warn!(
@@ -185,7 +88,23 @@ fn spawn_subscription_task(
                             }
                         }
                         Some(StreamItem::Eose) => {
-                            tracing::debug!(subscription = %subscription_id, "ignored live subscription EOSE");
+                            initial_done = true;
+                            let elapsed_ms = duration_to_ms(started_at.elapsed());
+                            tracing::info!(
+                                filters = %filters_json,
+                                hits,
+                                elapsed_ms,
+                                "search results sent"
+                            );
+
+                            if let Err(err) = send_eose(&sender, &subscription_id).await {
+                                tracing::warn!(
+                                    error = %err,
+                                    subscription = %subscription_id,
+                                    "failed to deliver EOSE"
+                                );
+                                break;
+                            }
                         }
                         None => break,
                     }
@@ -194,11 +113,6 @@ fn spawn_subscription_task(
             }
         }
     })
-}
-
-fn event_id_from_json(event_json: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(event_json).ok()?;
-    value.get("id")?.as_str().map(ToOwned::to_owned)
 }
 
 fn make_event_message(subscription_id: &SubscriptionId, event_json: &str) -> String {
@@ -214,14 +128,6 @@ async fn send_event_json(
     sender.lock().await.send(Frame::text(message)).await?;
     tokio::task::yield_now().await;
     Ok(())
-}
-
-fn filters_json_with_limit(filters: &[Filter], limit: usize) -> anyhow::Result<String> {
-    let mut filters = filters.to_vec();
-    for filter in &mut filters {
-        filter.limit = Some(limit);
-    }
-    serde_json::to_string(&filters).map_err(Into::into)
 }
 
 async fn send_eose(
@@ -249,41 +155,6 @@ async fn send_closed(
         .send(Frame::text(relay_msg.as_json()))
         .await?;
     Ok(())
-}
-
-fn log_query_profile(stats: &QueryStats) {
-    let total_candidates: usize = stats
-        .filters
-        .iter()
-        .map(|filter| filter.candidate_count)
-        .sum();
-
-    let filter_details = stats
-        .filters
-        .iter()
-        .enumerate()
-        .map(|(index, filter_stats)| {
-            format!(
-                "#{}:matched={} candidates={} index_ms={} post_ms={}",
-                index,
-                filter_stats.matched_event_count,
-                filter_stats.candidate_count,
-                duration_to_ms(filter_stats.index_scan_duration),
-                duration_to_ms(filter_stats.post_processing_duration)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-
-    tracing::debug!(
-        db_elapsed_ms = duration_to_ms(stats.total_elapsed),
-        index_scan_ms = duration_to_ms(stats.index_scan_duration),
-        post_processing_ms = duration_to_ms(stats.post_processing_duration),
-        filter_count = stats.filters.len(),
-        candidate_count = total_candidates,
-        filter_details = %filter_details,
-        "query profile"
-    );
 }
 
 fn duration_to_ms(duration: Duration) -> u64 {
@@ -368,7 +239,6 @@ pub async fn handle_req(
         }
 
         let filters_json = serde_json::to_string(&filters)?;
-        let live_filters_json = filters_json_with_limit(&filters, 0)?;
         let previous = {
             let mut guard = subscriptions.lock().await;
             guard.remove(&subscription_id)
@@ -390,7 +260,6 @@ pub async fn handle_req(
             sender.clone(),
             subscription_id.clone(),
             filters_json,
-            live_filters_json,
             cancel_rx,
         );
 

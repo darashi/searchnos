@@ -1753,7 +1753,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db#eb3ef5c8d21d802114b72e2f99e889945c07fb00"
+source = "git+https://github.com/darashi/searchnos-db#ae9ea8227a72864e569f1ef14b46189e1fffbf81"
 dependencies = [
  "clap",
  "futures-core",
