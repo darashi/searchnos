@@ -49,6 +49,7 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 const DB_PURGE_TICK_INTERVAL_SECS: u64 = 60;
 const DB_PURGE_BATCH_SIZE: usize = 1024;
+const DEFAULT_SEARCH_LIMIT: usize = 100;
 
 const DEFAULT_FETCH_KINDS: [Kind; 9] = [
     Kind::Metadata,
@@ -809,7 +810,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
         batch_size: args.db_batch_size,
         flush_interval: Duration::from_millis(args.db_flush_interval_ms),
         purge_policy: purge_policy.clone(),
-        default_limit: Some(500),
+        default_limit: Some(DEFAULT_SEARCH_LIMIT),
         max_limit: Some(1000),
         ..SearchnosDBOptions::default()
     };
