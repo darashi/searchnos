@@ -49,7 +49,7 @@ fn spawn_subscription_task(
         let started_at = Instant::now();
 
         let subscription_result = tokio::select! {
-            result = state.db.clone().subscribe_async(&filters_json) => result,
+            result = async { state.db.clone().subscribe(&filters_json) } => result,
             _ = wait_for_cancel(&mut cancel_rx) => return,
         };
         let mut subscription = match subscription_result {
