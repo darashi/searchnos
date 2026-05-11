@@ -7,7 +7,7 @@ use axum::{
     Extension, Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
 use nostr_sdk::{
     nips::nip42,
     prelude::{RelayInformationDocument, RelayMessage, ToBech32},
@@ -24,6 +24,7 @@ use searchnos_db::{PurgePolicy as DbPurgePolicy, SearchnosDB, SearchnosDBOptions
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{env, net::SocketAddr, str::FromStr, sync::Arc};
@@ -630,6 +631,16 @@ enum Command {
     Stat,
     /// Export all events as newline-delimited JSON sorted by newest first
     Export,
+    /// Dump stored ndb notes as length-prefixed binary records
+    Dump {
+        /// Path to the output dump file
+        output_path: PathBuf,
+    },
+    /// Load stored ndb notes from a length-prefixed binary dump
+    Load {
+        /// Path to the input dump file
+        input_path: PathBuf,
+    },
     Serve(ServeArgs),
     Import(ImportArgs),
 }
@@ -892,6 +903,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Stat => cmd::stat::run(common).await,
         Command::Export => cmd::export::run(common).await,
+        Command::Dump { output_path } => cmd::dump::run(common, output_path).await,
+        Command::Load { input_path } => cmd::load::run(common, input_path).await,
         Command::Serve(args) => run_serve(common, args).await,
         Command::Import(args) => run_import(common, args).await,
     }
@@ -1022,6 +1035,31 @@ fn default_progress_style() -> ProgressStyle {
         "per_sec_ev",
         |state: &ProgressState, w: &mut dyn std::fmt::Write| {
             let _ = write!(w, "{:.2} ev/s", state.per_sec());
+        },
+    )
+}
+
+fn byte_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{percent:>3}%|{bar:40}| {bytes}/{total_bytes} [{elapsed_precise}<{eta_precise}, {bytes_per_sec}]",
+    )
+    .unwrap()
+    .with_key(
+        "bytes",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let _ = write!(w, "{}", HumanBytes(state.pos()));
+        },
+    )
+    .with_key(
+        "total_bytes",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let _ = write!(w, "{}", HumanBytes(state.len().unwrap_or(0)));
+        },
+    )
+    .with_key(
+        "bytes_per_sec",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let _ = write!(w, "{}/s", HumanBytes(state.per_sec() as u64));
         },
     )
 }

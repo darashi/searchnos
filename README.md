@@ -19,11 +19,19 @@ Start server (Docker):
 
 Run without Docker:
 
-    cargo run -- serve --db-path ./data
+    cargo run -- --db-path ./data serve
 
 Import events from JSONL:
 
-    cargo run -- import --db-path ./data path/to/events.jsonl
+    cargo run -- --db-path ./data import path/to/events.jsonl
+
+Dump stored ndb notes to a length-prefixed binary stream:
+
+    cargo run -- --db-path ./data dump path/to/events.dump
+
+Load stored ndb notes from a length-prefixed binary stream:
+
+    cargo run -- --db-path ./data load path/to/events.dump
 
 Search:
 
