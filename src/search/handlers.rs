@@ -172,6 +172,23 @@ impl ClosedError {
     }
 }
 
+fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
+    const SEARCH_FILTER_REQUIRED: &str = "error: search filter is required";
+
+    if filters.is_empty() {
+        return Err(SEARCH_FILTER_REQUIRED.to_string());
+    }
+
+    for filter in filters {
+        match filter.search.as_deref() {
+            Some(search) if !search.trim().is_empty() => {}
+            Some(_) | None => return Err(SEARCH_FILTER_REQUIRED.to_string()),
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn handle_req(
     state: Arc<AppState>,
     sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
@@ -205,6 +222,10 @@ pub async fn handle_req(
                 subscription_id.clone(),
                 format!("error: too many filters: {}", filters.len())
             ));
+        }
+
+        if let Err(message) = validate_search_filters(&filters) {
+            bail!(ClosedError::new(subscription_id.clone(), message));
         }
 
         let filters_json = serde_json::to_string(&filters)?;
@@ -324,4 +345,39 @@ pub async fn handle_close(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_search_filters_accepts_non_empty_search() {
+        let filters = vec![Filter::new().search("nostr")];
+
+        assert!(validate_search_filters(&filters).is_ok());
+    }
+
+    #[test]
+    fn validate_search_filters_rejects_empty_filter_list() {
+        let err = validate_search_filters(&[]).unwrap_err();
+
+        assert_eq!(err, "error: search filter is required");
+    }
+
+    #[test]
+    fn validate_search_filters_rejects_missing_search() {
+        let filters = vec![Filter::new().limit(1)];
+        let err = validate_search_filters(&filters).unwrap_err();
+
+        assert_eq!(err, "error: search filter is required");
+    }
+
+    #[test]
+    fn validate_search_filters_rejects_empty_search() {
+        let filters = vec![Filter::new().search("   ")];
+        let err = validate_search_filters(&filters).unwrap_err();
+
+        assert_eq!(err, "error: search filter is required");
+    }
 }
