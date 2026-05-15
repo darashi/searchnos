@@ -1,7 +1,9 @@
+use crate::app_state::AppState;
+use crate::client_addr::ClientAddr;
+use crate::relay_sender::RelaySender;
 use anyhow::bail;
-use futures::sink::SinkExt;
-use nostr_sdk::prelude::{RelayMessage, SubscriptionId};
-use nostr_sdk::{Filter, JsonUtil};
+use nostr_sdk::prelude::SubscriptionId;
+use nostr_sdk::Filter;
 use searchnos_db::StreamItem;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,10 +11,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
-use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};
-
-use crate::app_state::AppState;
-use crate::client_addr::ClientAddr;
 
 pub struct SubscriptionHandle {
     cancel: watch::Sender<bool>,
@@ -40,7 +38,7 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
 
 fn spawn_subscription_task(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     subscription_id: SubscriptionId,
     filters_json: String,
     mut cancel_rx: watch::Receiver<bool>,
@@ -120,41 +118,26 @@ fn make_event_message(subscription_id: &SubscriptionId, event_json: &str) -> Str
 }
 
 async fn send_event_json(
-    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: &RelaySender,
     subscription_id: &SubscriptionId,
     event_json: &str,
 ) -> anyhow::Result<()> {
     let message = make_event_message(subscription_id, event_json);
-    sender.lock().await.send(Frame::text(message)).await?;
+    sender.text(message).await?;
     tokio::task::yield_now().await;
     Ok(())
 }
 
-async fn send_eose(
-    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
-    subscription_id: &SubscriptionId,
-) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::eose(subscription_id.clone());
-    sender
-        .lock()
-        .await
-        .send(Frame::text(relay_msg.as_json()))
-        .await?;
-    Ok(())
+async fn send_eose(sender: &RelaySender, subscription_id: &SubscriptionId) -> anyhow::Result<()> {
+    sender.eose(subscription_id.clone()).await
 }
 
 async fn send_closed(
-    sender: &Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: &RelaySender,
     subscription_id: &SubscriptionId,
     message: &str,
 ) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::closed(subscription_id.clone(), message);
-    sender
-        .lock()
-        .await
-        .send(Frame::text(relay_msg.as_json()))
-        .await?;
-    Ok(())
+    sender.closed(subscription_id.clone(), message).await
 }
 
 fn duration_to_ms(duration: Duration) -> u64 {
@@ -201,7 +184,7 @@ fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
 
 pub async fn handle_req(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
     subscription_id: &SubscriptionId,
     filters: Vec<Filter>,

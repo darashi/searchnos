@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context};
 use nostr_sdk::Event;
@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
+
+const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct WritePolicyPlugin {
@@ -58,11 +61,15 @@ impl WritePolicyPlugin {
             .process
             .as_mut()
             .ok_or_else(|| anyhow!("plugin process not available"))?;
-        let line = match process.request(&payload).await {
-            Ok(line) => line,
-            Err(err) => {
+        let line = match timeout(DEFAULT_PLUGIN_TIMEOUT, process.request(&payload)).await {
+            Ok(Ok(line)) => line,
+            Ok(Err(err)) => {
                 state.process.take();
                 return Err(err);
+            }
+            Err(_) => {
+                state.process.take();
+                return Err(anyhow!("plugin request timed out"));
             }
         };
         let response: PluginResponse =

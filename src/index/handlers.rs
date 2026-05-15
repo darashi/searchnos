@@ -1,14 +1,12 @@
 use chrono::Utc;
-use futures::sink::SinkExt;
-use nostr_sdk::{prelude::*, Event};
+use nostr_sdk::{Event, JsonUtil};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::plugin::{PluginDecision, PluginSourceType};
-use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};
+use crate::relay_sender::RelaySender;
 
 pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Result<()> {
     let db = state.db.clone();
@@ -18,22 +16,16 @@ pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Resul
 }
 
 pub async fn send_ok(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     event: &Event,
     status: bool,
     message: &str,
 ) -> anyhow::Result<()> {
-    let relay_msg = RelayMessage::ok(event.id, status, message);
-    sender
-        .lock()
-        .await
-        .send(Frame::text(relay_msg.as_json()))
-        .await?;
-    Ok(())
+    sender.ok(event, status, message).await
 }
 
 pub async fn handle_event(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     state: Arc<AppState>,
     addr: ClientAddr,
     event: &nostr_sdk::Event,

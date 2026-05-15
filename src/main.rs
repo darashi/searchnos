@@ -6,19 +6,19 @@ use axum::{
     routing::get,
     Extension, Router,
 };
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
 use nostr_sdk::{
-    nips::nip42,
-    prelude::{RelayInformationDocument, RelayMessage, ToBech32},
-    Event, JsonUtil, Kind, PublicKey, RelayUrl,
+    prelude::{RelayInformationDocument, ToBech32},
+    Event, JsonUtil, Kind, RelayUrl,
 };
-use rand::{distr::Alphanumeric, RngExt};
 use searchnos::app_state::AppState;
+use searchnos::auth::{generate_auth_challenge, handle_auth_message, ConnectionAuthState};
 use searchnos::client_addr::ClientAddr;
 use searchnos::index::fetcher::spawn_fetcher;
-use searchnos::index::handlers::{handle_event, send_ok};
+use searchnos::index::handlers::handle_event;
 use searchnos::plugin::WritePolicyPlugin;
+use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{handle_close, handle_req, ClosedError, SubscriptionHandle};
 use searchnos_db::{PurgePolicy as DbPurgePolicy, SearchnosDB, SearchnosDBOptions};
 use std::collections::{HashMap, HashSet};
@@ -36,14 +36,6 @@ use yawc::{
     frame::{Frame, OpCode},
     CompressionLevel, HttpWebSocket as YawcWebSocket, IncomingUpgrade, Options,
 };
-
-fn generate_auth_challenge() -> String {
-    rand::rng()
-        .sample_iter(Alphanumeric)
-        .map(char::from)
-        .take(32)
-        .collect()
-}
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -91,6 +83,29 @@ fn parse_fetch_kinds(values: &[String]) -> anyhow::Result<Vec<Kind>> {
     Ok(kinds)
 }
 
+struct DbRuntimeConfig {
+    batch_size: usize,
+    flush_interval: Duration,
+}
+
+fn validate_db_runtime_config(
+    batch_size: usize,
+    flush_interval_ms: u64,
+) -> anyhow::Result<DbRuntimeConfig> {
+    if batch_size == 0 {
+        return Err(anyhow!("db batch size must be greater than zero"));
+    }
+
+    if flush_interval_ms == 0 {
+        return Err(anyhow!("db flush interval must be greater than zero"));
+    }
+
+    Ok(DbRuntimeConfig {
+        batch_size,
+        flush_interval: Duration::from_millis(flush_interval_ms),
+    })
+}
+
 fn spawn_purge_worker(db: Arc<SearchnosDB>) {
     tokio::spawn(async move {
         let tick_interval = Duration::from_secs(DB_PURGE_TICK_INTERVAL_SECS);
@@ -133,42 +148,9 @@ fn spawn_purge_worker(db: Arc<SearchnosDB>) {
     });
 }
 
-struct ConnectionAuthState {
-    challenge: String,
-    challenge_sent: bool,
-    authenticated_pubkeys: std::collections::BTreeSet<PublicKey>,
-}
-
-impl ConnectionAuthState {
-    fn new(challenge: String) -> Self {
-        Self {
-            challenge,
-            challenge_sent: false,
-            authenticated_pubkeys: std::collections::BTreeSet::new(),
-        }
-    }
-
-    fn authenticated_pubkeys(&self) -> Vec<PublicKey> {
-        self.authenticated_pubkeys.iter().cloned().collect()
-    }
-
-    fn ensure_challenge(&mut self) -> String {
-        if !self.challenge_sent {
-            self.challenge_sent = true;
-        }
-        self.challenge.clone()
-    }
-
-    fn register_authenticated_pubkey(&mut self, pubkey: PublicKey) {
-        self.authenticated_pubkeys.insert(pubkey);
-        self.challenge = generate_auth_challenge();
-        self.challenge_sent = false;
-    }
-}
-
 async fn process_message(
     state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     subscriptions: Arc<Mutex<HashMap<nostr_sdk::SubscriptionId, SubscriptionHandle>>>,
     addr: ClientAddr,
     msg: Frame,
@@ -206,7 +188,8 @@ async fn process_message(
                     let (challenge_to_send, authenticated_pubkeys) = {
                         let mut auth_state = auth_state.lock().await;
                         let authed_pubkeys = auth_state.authenticated_pubkeys();
-                        let challenge = if authed_pubkeys.is_empty() && !auth_state.challenge_sent {
+                        let challenge = if authed_pubkeys.is_empty() && !auth_state.challenge_sent()
+                        {
                             Some(auth_state.ensure_challenge())
                         } else {
                             None
@@ -271,123 +254,29 @@ async fn process_message(
     Ok(())
 }
 
-async fn send_notice(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
-    msg: &str,
-) -> anyhow::Result<()> {
-    let notice = RelayMessage::notice(msg);
-    sender
-        .lock()
-        .await
-        .send(Frame::text(notice.as_json()))
-        .await?;
-    Ok(())
+async fn send_notice(sender: RelaySender, msg: &str) -> anyhow::Result<()> {
+    sender.notice(msg).await
 }
 
-async fn send_auth_challenge(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
-    challenge: &str,
-) -> anyhow::Result<()> {
-    let auth = RelayMessage::auth(challenge.to_string());
-    sender
-        .lock()
-        .await
-        .send(Frame::text(auth.as_json()))
-        .await?;
-    Ok(())
+async fn send_auth_challenge(sender: RelaySender, challenge: &str) -> anyhow::Result<()> {
+    sender.auth(challenge).await
 }
 
 async fn send_closed(
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
+    sender: RelaySender,
     subscription_id: nostr_sdk::SubscriptionId,
     msg: &str,
 ) -> anyhow::Result<()> {
-    let closed = RelayMessage::closed(subscription_id, msg);
-    sender
-        .lock()
-        .await
-        .send(Frame::text(closed.as_json()))
-        .await?;
-    Ok(())
+    sender.closed(subscription_id, msg).await
 }
 
-async fn handle_auth_message(
-    state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
-    event: nostr_sdk::Event,
-    auth_state: Arc<Mutex<ConnectionAuthState>>,
-) -> anyhow::Result<()> {
-    let challenge = {
-        let auth_state = auth_state.lock().await;
-        auth_state.challenge.clone()
-    };
-
-    let npub = event
-        .pubkey
-        .to_bech32()
-        .unwrap_or_else(|_| event.pubkey.to_string());
-
-    if let Err(e) = event.verify() {
-        tracing::warn!(
-            "authentication failed due to invalid signature for {}: {}",
-            event.id,
-            e
-        );
-        send_notice(sender.clone(), "auth: invalid signature").await?;
-        return Ok(());
-    }
-
-    let valid = if let Some(relay_url) = &state.public_relay_url {
-        nip42::is_valid_auth_event(&event, relay_url, &challenge)
-    } else {
-        event.kind == Kind::Authentication
-            && event
-                .tags
-                .challenge()
-                .map(|c| c == challenge)
-                .unwrap_or(false)
-    };
-
-    if !valid {
-        tracing::warn!(
-            "authentication failed due to invalid challenge or relay (pubkey {})",
-            npub
-        );
-        send_notice(sender.clone(), "auth: invalid challenge").await?;
-        return Ok(());
-    }
-
-    let authed_count = {
-        let mut auth_state = auth_state.lock().await;
-        auth_state.register_authenticated_pubkey(event.pubkey);
-        auth_state.authenticated_pubkeys.len()
-    };
-
-    tracing::info!(
-        auth_pubkey = %npub,
-        total_authenticated_pubkeys = authed_count,
-        "nip42 authentication verified"
-    );
-    send_ok(sender.clone(), &event, true, "").await?;
-
-    Ok(())
-}
-
-async fn spawn_pinger(
-    state: Arc<AppState>,
-    sender: Arc<Mutex<futures::stream::SplitSink<YawcWebSocket, Frame>>>,
-    span: Span,
-) -> JoinHandle<()> {
+async fn spawn_pinger(state: Arc<AppState>, sender: RelaySender, span: Span) -> JoinHandle<()> {
     tokio::spawn(
         async move {
             loop {
                 tokio::time::sleep(state.ping_interval).await;
                 tracing::info!("sending ping");
-                let res = sender
-                    .lock()
-                    .await
-                    .send(Frame::ping(Vec::<u8>::new()))
-                    .await;
+                let res = sender.frame(Frame::ping(Vec::<u8>::new())).await;
                 if let Err(e) = res {
                     tracing::warn!("error sending ping: {}", e);
                     return;
@@ -431,7 +320,7 @@ async fn websocket(
         let active_connections = state.active_connections.fetch_add(1, Ordering::SeqCst) + 1;
         tracing::info!(active_connections, "new websocket connection");
         let (sender, mut receiver) = socket.split();
-        let sender = Arc::new(Mutex::new(sender));
+        let sender = RelaySender::new(sender);
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
         let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
             generate_auth_challenge(),
@@ -514,7 +403,7 @@ async fn websocket(
 }
 
 async fn ping() -> impl IntoResponse {
-    println!("PING");
+    tracing::debug!("PING");
 
     StatusCode::OK
 }
@@ -726,6 +615,18 @@ struct ServeArgs {
     /// When set, reject all EVENT messages before invoking the plugin
     #[arg(long = "block-event-message", env = "BLOCK_EVENT_MESSAGE")]
     block_event_message: bool,
+
+    /// Relay name returned in NIP-11 metadata
+    #[arg(long = "relay-name", env = "RELAY_NAME", default_value = "searchnos")]
+    relay_name: String,
+
+    /// Relay description returned in NIP-11 metadata
+    #[arg(
+        long = "relay-description",
+        env = "RELAY_DESCRIPTION",
+        default_value = "searchnos relay"
+    )]
+    relay_description: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -770,13 +671,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
 
     tracing::info!("{} {}", pkg_name, version);
 
-    if args.db_batch_size == 0 {
-        return Err(anyhow!("db batch size must be greater than zero").into());
-    }
-
-    if args.db_flush_interval_ms == 0 {
-        return Err(anyhow!("db flush interval must be greater than zero").into());
-    }
+    let db_runtime = validate_db_runtime_config(args.db_batch_size, args.db_flush_interval_ms)?;
 
     let src_relays = parse_src_relays(&args.src_relays)?;
     let mut fetch_kinds = parse_fetch_kinds(&args.fetch_kinds)?;
@@ -807,8 +702,8 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
     );
 
     let db_options = SearchnosDBOptions {
-        batch_size: args.db_batch_size,
-        flush_interval: Duration::from_millis(args.db_flush_interval_ms),
+        batch_size: db_runtime.batch_size,
+        flush_interval: db_runtime.flush_interval,
         purge_policy: purge_policy.clone(),
         default_limit: Some(DEFAULT_SEARCH_LIMIT),
         max_limit: Some(1000),
@@ -822,8 +717,8 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
     }
 
     let mut relay_info = RelayInformationDocument::new();
-    relay_info.name = Some("searchnos".to_string()); // TODO make this configurable
-    relay_info.description = Some("searchnos relay".to_string()); // TODO make this configurable
+    relay_info.name = Some(args.relay_name.clone());
+    relay_info.description = Some(args.relay_description.clone());
     relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 40, 42, 50, 70]);
     relay_info.software = Some(pkg_name);
     relay_info.version = Some(version);
@@ -898,7 +793,6 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env::set_var("RUST_LOG", "debug");
     init_tracing();
     let Cli { common, command } = Cli::parse();
     match command {
@@ -946,13 +840,7 @@ async fn run_import(
 }
 
 fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary, anyhow::Error> {
-    if args.db_batch_size == 0 {
-        return Err(anyhow!("db batch size must be greater than zero"));
-    }
-
-    if args.db_flush_interval_ms == 0 {
-        return Err(anyhow!("db flush interval must be greater than zero"));
-    }
+    let db_runtime = validate_db_runtime_config(args.db_batch_size, args.db_flush_interval_ms)?;
 
     let fetch_kinds = parse_fetch_kinds(&args.fetch_kinds)?;
     let allowed_kinds: Option<HashSet<Kind>> = if fetch_kinds.is_empty() {
@@ -971,8 +859,8 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
     };
 
     let options = SearchnosDBOptions {
-        batch_size: args.db_batch_size,
-        flush_interval: Duration::from_millis(args.db_flush_interval_ms),
+        batch_size: db_runtime.batch_size,
+        flush_interval: db_runtime.flush_interval,
         ..SearchnosDBOptions::default()
     };
 
@@ -1091,13 +979,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn somke_test() {
+    async fn smoke_test() {
         init_tracing();
 
         let port = match find_available_port() {
             Ok(port) => port,
             Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-                println!("skipping somke_test: {err}");
+                println!("skipping smoke_test: {err}");
                 return;
             }
             Err(err) => panic!("failed to find available port: {err}"),
@@ -1123,6 +1011,8 @@ mod tests {
             respect_forwarded_headers: false,
             write_policy_plugin: None,
             block_event_message: false,
+            relay_name: "searchnos".to_string(),
+            relay_description: "searchnos relay".to_string(),
         };
         let app = app(&common, &args).await.unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
