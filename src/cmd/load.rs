@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{ensure, Context};
 use indicatif::{HumanBytes, ProgressBar};
 
-use crate::{byte_progress_style, CommonArgs};
+use crate::{byte_progress_style, cmd::compact::compact_and_print, CommonArgs};
 use searchnos::db_adapter::open_db;
 
 /// Load stored ndb notes from length-prefixed binary streams.
@@ -58,6 +58,8 @@ pub async fn run(common: CommonArgs, input_paths: Vec<PathBuf>) -> anyhow::Resul
         HumanBytes(bytes_read),
         inputs.len()
     ));
+
+    compact_and_print(&db)?;
 
     Ok(())
 }

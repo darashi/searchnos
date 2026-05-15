@@ -29,7 +29,8 @@ Dump stored ndb notes to a length-prefixed binary stream:
 
     cargo run -- --db-path ./data dump path/to/events.dump
 
-Load stored ndb notes from one or more length-prefixed binary streams:
+Load stored ndb notes from one or more length-prefixed binary streams, then
+compact the loaded events into per-day partitions:
 
     cargo run -- --db-path ./data load path/to/events-1.dump path/to/events-2.dump
 
