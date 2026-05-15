@@ -3,7 +3,7 @@ use std::error::Error;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ndb::{NdbNote, NdbNoteBuf};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
@@ -17,6 +17,8 @@ use tungstenite::{connect, Message, WebSocket};
 const NEGENTROPY_FRAME_SIZE_LIMIT: u64 = 60_000;
 const FETCH_BATCH_SIZE: usize = 100;
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
+const RELAY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+const FETCH_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -105,8 +107,22 @@ fn reconcile_unix_day(
         ..ReconcileStats::default()
     };
 
-    for chunk in need_ids.chunks(FETCH_BATCH_SIZE) {
+    if !need_ids.is_empty() {
+        info!(
+            %relay,
+            unix_day,
+            missing_total = need_ids.len(),
+            batch_size = FETCH_BATCH_SIZE,
+            batches = need_ids.len().div_ceil(FETCH_BATCH_SIZE),
+            "fetching missing events after negentropy reconcile"
+        );
+    }
+
+    let total_batches = need_ids.len().div_ceil(FETCH_BATCH_SIZE);
+    let mut last_progress_log = Instant::now();
+    for (batch_index, chunk) in need_ids.chunks(FETCH_BATCH_SIZE).enumerate() {
         let events = fetch_events_by_ids(&mut socket, relay, chunk)?;
+        let fetched = events.len();
         for event_json in events {
             let note = match NdbNoteBuf::from_json(&event_json) {
                 Ok(note) => note,
@@ -134,6 +150,21 @@ fn reconcile_unix_day(
                 )?;
                 stats.stored += 1;
             }
+        }
+        let is_last_batch = batch_index + 1 == total_batches;
+        if is_last_batch || last_progress_log.elapsed() >= FETCH_PROGRESS_INTERVAL {
+            info!(
+                %relay,
+                unix_day,
+                batch = batch_index + 1,
+                batches = total_batches,
+                requested = chunk.len(),
+                fetched,
+                stored_total = stats.stored,
+                invalid_total = stats.invalid,
+                "fetching missing events after negentropy reconcile"
+            );
+            last_progress_log = Instant::now();
         }
     }
 
@@ -176,9 +207,10 @@ fn reconcile_missing_ids(
     let mut need_ids = Vec::new();
     let mut seen_need_ids = HashSet::new();
     let mut round = 0_u64;
+    let mut response_deadline = Instant::now() + RELAY_RESPONSE_TIMEOUT;
 
     loop {
-        let text = read_text_message(socket)?;
+        let text = read_text_message(socket, response_deadline, "negentropy response")?;
         let Some(message) = parse_relay_message(&text)? else {
             continue;
         };
@@ -214,6 +246,7 @@ fn reconcile_missing_ids(
                 );
                 if let Some(response) = response {
                     send_neg_msg(socket, &subscription, &response)?;
+                    response_deadline = Instant::now() + RELAY_RESPONSE_TIMEOUT;
                 } else {
                     send_neg_close(socket, &subscription)?;
                     return Ok(need_ids);
@@ -246,8 +279,9 @@ fn fetch_events_by_ids(
     socket.send(Message::Text(request.to_string().into()))?;
 
     let mut events = Vec::new();
+    let response_deadline = Instant::now() + RELAY_RESPONSE_TIMEOUT;
     loop {
-        let text = read_text_message(socket)?;
+        let text = read_text_message(socket, response_deadline, "fetch EOSE response")?;
         let Some(message) = parse_relay_message(&text)? else {
             continue;
         };
@@ -364,7 +398,11 @@ fn is_allowed_kind(kind: u32, kinds: &[Kind]) -> bool {
         .any(|allowed_kind| u32::from(u16::from(*allowed_kind)) == kind)
 }
 
-fn read_text_message(socket: &mut RelaySocket) -> Result<String, Box<dyn Error>> {
+fn read_text_message(
+    socket: &mut RelaySocket,
+    deadline: Instant,
+    context: &str,
+) -> Result<String, Box<dyn Error>> {
     loop {
         match socket.read() {
             Ok(Message::Text(text)) => return Ok(text.to_string()),
@@ -377,7 +415,16 @@ fn read_text_message(socket: &mut RelaySocket) -> Result<String, Box<dyn Error>>
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                ) => {}
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "{context} timed out after {}s",
+                        RELAY_RESPONSE_TIMEOUT.as_secs()
+                    )
+                    .into());
+                }
+            }
             Err(error) => return Err(error.into()),
         }
     }
