@@ -1,8 +1,6 @@
 # Searchnos: a NIP-50 Relay (Search Notes and Other Stuff)
 
-This is a relay server that provides a Nostr full-text search capability backed by [searchnos-db](https://github.com/darashi/searchnos-db).
-
-Connections must authenticate via [NIP-42](https://github.com/nostr-protocol/nips/blob/master/42.md) using one of the configured admin public keys before they can publish. Authenticated (administrative) connections may send `EVENT`s, while unauthenticated connections are limited to search-only operations.
+This is a relay server that provides a Nostr full-text search capability backed by [searchnos-db](https://github.com/darashi/searchnos-db). Client `EVENT` submissions are rejected; populate the index with source relays or the import/load commands.
 
 ## Current Limitations
 
@@ -63,24 +61,12 @@ See `compose.yaml` and `.env.example` for the configuration.
 
 `SRC_RELAYS` and `FETCH_KINDS` can be a comma-separated list.
 
-- `PUBLIC_RELAY_URL` (optional): canonical relay URL used to validate `relay` tags in AUTH events (e.g. `wss://searchnos.example.com`).
 - `SRC_RELAYS` (optional): comma-separated list of source relay URLs to fetch events from.
 - `FETCH_KINDS` (optional): comma-separated list of numeric event kinds to fetch or reconcile with negentropy. When unset but `SRC_RELAYS` or `NEGENTROPY_RELAYS` is provided, a default set matching the NIP-50 indexer is used (`0,1,5,30023,40,41,42,43,44`).
 - `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days. Negentropy uses the same kind set as `FETCH_KINDS`.
 - `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
-- `WRITE_POLICY_PLUGIN` (optional): command that implements the write policy plugin; it is compatible with the strfry relay plugin system. `EVENT` submissions always go through the plugin, and each request includes searchnos-specific NIP-42 extensions (documented below) so the plugin can enforce authentication-aware policies.
-- `BLOCK_EVENT_MESSAGE` (optional): when set (or `--block-event-message` is passed to the CLI), all `EVENT` messages are rejected before any plugin logic executes. This is useful when the relay should operate in read-only/search-only mode.
-
-### Write policy plugin extensions
-
-Write policy plugins follow the strfry plugin protocol with two additional fields that enable NIP-42-aware policies:
-
-* Input messages include `authenticatedPubkeys`, an array of hex-encoded public keys that already completed a NIP-42 authentication flow on the current connection. When no keys have authenticated yet, the array is empty.
-* Plugins can return an `action` of `rejectAndChallenge` (in addition to strfry's `accept`, `reject`, and `shadowReject`). When a plugin responds with `rejectAndChallenge`, searchnos replies to the client with the optional `msg`, marks the write as rejected, and immediately sends a fresh AUTH challenge so the client can authenticate before retrying.
-
-See `plugins.md` for the full plugin specification and examples.
 
 ## Static build
 

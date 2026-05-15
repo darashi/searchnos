@@ -40,11 +40,6 @@ impl RelaySender {
         self.relay_message(RelayMessage::notice(msg)).await
     }
 
-    pub async fn auth(&self, challenge: &str) -> anyhow::Result<()> {
-        self.relay_message(RelayMessage::auth(challenge.to_string()))
-            .await
-    }
-
     pub async fn closed(&self, subscription_id: SubscriptionId, msg: &str) -> anyhow::Result<()> {
         self.relay_message(RelayMessage::closed(subscription_id, msg))
             .await

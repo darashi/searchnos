@@ -8,19 +8,13 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
-use nostr_sdk::{
-    prelude::{RelayInformationDocument, ToBech32},
-    Event, JsonUtil, Kind, RelayUrl,
-};
+use nostr_sdk::{prelude::RelayInformationDocument, Event, JsonUtil, Kind};
 use searchnos::app_state::AppState;
-use searchnos::auth::{generate_auth_challenge, handle_auth_message, ConnectionAuthState};
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
 use searchnos::db_adapter::{insert_event_json, open_db};
 use searchnos::index::fetcher::spawn_fetcher;
-use searchnos::index::handlers::handle_event;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
-use searchnos::plugin::WritePolicyPlugin;
 use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
     handle_close, handle_req, ClientMessageError, SubscriptionManager,
@@ -32,7 +26,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, Span};
 use yawc::{
@@ -48,7 +41,6 @@ async fn process_message(
     subscriptions: SubscriptionManager,
     addr: ClientAddr,
     msg: Frame,
-    auth_state: Arc<Mutex<ConnectionAuthState>>,
 ) -> Result<(), ClientMessageError> {
     match msg.opcode() {
         OpCode::Text => {
@@ -81,54 +73,15 @@ async fn process_message(
                     Ok(())
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
-                    let (challenge_to_send, authenticated_pubkeys) = {
-                        let mut auth_state = auth_state.lock().await;
-                        let authed_pubkeys = auth_state.authenticated_pubkeys();
-                        let challenge = if authed_pubkeys.is_empty() && !auth_state.challenge_sent()
-                        {
-                            Some(auth_state.ensure_challenge())
-                        } else {
-                            None
-                        };
-                        (challenge, authed_pubkeys)
-                    };
-
-                    if let Some(challenge) = challenge_to_send {
-                        send_auth_challenge(sender.clone(), &challenge).await?;
-                    }
-
-                    let authenticated_pubkeys_hex: Vec<String> = authenticated_pubkeys
-                        .iter()
-                        .map(|pk| pk.to_string())
-                        .collect();
-
-                    let should_send_auth = handle_event(
-                        sender.clone(),
-                        state.clone(),
-                        addr.clone(),
-                        &event,
-                        authenticated_pubkeys_hex,
-                    )
-                    .await?;
-
-                    if should_send_auth {
-                        let challenge = {
-                            let mut auth_state = auth_state.lock().await;
-                            auth_state.ensure_challenge()
-                        };
-                        send_auth_challenge(sender.clone(), &challenge).await?;
-                    }
-
-                    Ok(())
-                }
-                nostr_sdk::ClientMessage::Auth(event) => {
-                    handle_auth_message(
-                        state.clone(),
-                        sender.clone(),
-                        event.into_owned(),
-                        auth_state.clone(),
-                    )
-                    .await?;
+                    tracing::info!(
+                        id = %event.id,
+                        kind = event.kind.as_u16(),
+                        pubkey = %event.pubkey,
+                        remote_ip = %addr.socket_addr().ip(),
+                        remote_port = addr.socket_addr().port(),
+                        "rejected EVENT message"
+                    );
+                    sender.ok(&event, false, "blocked: writes disabled").await?;
                     Ok(())
                 }
                 other => Err(anyhow!("invalid message type: {:?}", other).into()),
@@ -152,10 +105,6 @@ async fn process_message(
 
 async fn send_notice(sender: RelaySender, msg: &str) -> anyhow::Result<()> {
     sender.notice(msg).await
-}
-
-async fn send_auth_challenge(sender: RelaySender, challenge: &str) -> anyhow::Result<()> {
-    sender.auth(challenge).await
 }
 
 async fn send_closed(
@@ -218,9 +167,6 @@ async fn websocket(
         let (sender, mut receiver) = socket.split();
         let sender = RelaySender::new(sender);
         let subscriptions = SubscriptionManager::new();
-        let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
-            generate_auth_challenge(),
-        )));
 
         // spawn pinger
         let pinger_handle = spawn_pinger(state.clone(), sender.clone(), span_for_pinger).await;
@@ -232,7 +178,6 @@ async fn websocket(
                 subscriptions.clone(),
                 addr.clone(),
                 msg,
-                auth_state.clone(),
             )
             .await;
 
@@ -271,24 +216,7 @@ async fn websocket(
         subscriptions.close_all(addr.clone()).await;
 
         pinger_handle.abort();
-        let authed_pubkeys = {
-            let auth_state = auth_state.lock().await;
-            auth_state.authenticated_pubkeys()
-        };
-        if authed_pubkeys.is_empty() {
-            tracing::info!(active_connections, "disconnected");
-        } else {
-            let authed_list = authed_pubkeys
-                .iter()
-                .map(|pk| pk.to_bech32().unwrap_or_else(|_| pk.to_string()))
-                .collect::<Vec<_>>()
-                .join(",");
-            tracing::info!(
-                authenticated_pubkeys = authed_list.as_str(),
-                active_connections,
-                "disconnected"
-            );
-        }
+        tracing::info!(active_connections, "disconnected");
     }
     .instrument(connection_span)
     .await;
@@ -437,10 +365,6 @@ struct ServeArgs {
     #[arg(long, env, default_value_t = 3000)]
     port: u16,
 
-    /// Public relay URL used to validate AUTH events (optional)
-    #[arg(long = "public-relay-url", env = "PUBLIC_RELAY_URL")]
-    public_relay_url: Option<String>,
-
     /// Comma-separated list of relays to fetch events from
     #[arg(
         long = "src-relays",
@@ -487,18 +411,6 @@ struct ServeArgs {
     /// Use Forwarded header when logging client addresses
     #[arg(long = "respect-forwarded", env = "SEARCHNOS_RESPECT_FORWARDED")]
     respect_forwarded_headers: bool,
-
-    /// Command executed for the write policy plugin
-    #[arg(
-        long = "write-policy-plugin",
-        env = "WRITE_POLICY_PLUGIN",
-        value_name = "CMD"
-    )]
-    write_policy_plugin: Option<String>,
-
-    /// When set, reject all EVENT messages before invoking the plugin
-    #[arg(long = "block-event-message", env = "BLOCK_EVENT_MESSAGE")]
-    block_event_message: bool,
 
     /// Relay name returned in NIP-11 metadata
     #[arg(long = "relay-name", env = "RELAY_NAME", default_value = "searchnos")]
@@ -560,51 +472,19 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some(args.relay_name.clone());
     relay_info.description = Some(args.relay_description.clone());
-    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 40, 42, 50, 70]);
+    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 40, 50]);
     relay_info.software = Some(pkg_name);
     relay_info.version = Some(version);
     let relay_info = serde_json::to_string(&relay_info)?;
-
-    let public_relay_url = match &args.public_relay_url {
-        Some(url) => {
-            let url = url.trim();
-            if url.is_empty() {
-                None
-            } else {
-                Some(RelayUrl::parse(url).with_context(|| format!("invalid relay url '{}'", url))?)
-            }
-        }
-        None => None,
-    };
-
-    let write_policy_plugin = args
-        .write_policy_plugin
-        .as_ref()
-        .map(|cmd| cmd.trim())
-        .filter(|cmd| !cmd.is_empty());
-    let write_policy_plugin = if let Some(command) = write_policy_plugin {
-        tracing::info!(command = %command, "write policy plugin configured");
-        Some(Arc::new(WritePolicyPlugin::new(command.to_string())?))
-    } else {
-        tracing::info!("write policy plugin disabled");
-        None
-    };
-
-    if args.block_event_message {
-        tracing::info!("EVENT messages blocked by configuration");
-    }
 
     let app_state = Arc::new(AppState {
         db,
         relay_info,
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
-        public_relay_url,
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
-        write_policy_plugin,
-        block_event_message: args.block_event_message,
     });
 
     if !src_relays.is_empty() {
@@ -845,7 +725,6 @@ mod tests {
         };
         let args = ServeArgs {
             port,
-            public_relay_url: None,
             src_relays: Vec::new(),
             fetch_kinds: Vec::new(),
             negentropy_relays: Vec::new(),
@@ -854,8 +733,6 @@ mod tests {
             max_filters: 32,
             ping_interval: 55,
             respect_forwarded_headers: false,
-            write_policy_plugin: None,
-            block_event_message: false,
             relay_name: "searchnos".to_string(),
             relay_description: "searchnos relay".to_string(),
         };
@@ -886,6 +763,75 @@ mod tests {
             .fetch_events_from([&relay_url], filter, Duration::from_secs(5))
             .await;
         assert!(res.is_ok());
+
+        join_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn event_messages_are_rejected() {
+        init_tracing();
+
+        let port = match find_available_port() {
+            Ok(port) => port,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                println!("skipping event_messages_are_rejected: {err}");
+                return;
+            }
+            Err(err) => panic!("failed to find available port: {err}"),
+        };
+        let db_path = std::env::temp_dir()
+            .join(format!("searchnos-db-event-test-{}", port))
+            .display()
+            .to_string();
+        let common = CommonArgs {
+            db_path: db_path.clone(),
+        };
+        let args = ServeArgs {
+            port,
+            src_relays: Vec::new(),
+            fetch_kinds: Vec::new(),
+            negentropy_relays: Vec::new(),
+            negentropy_days: 2,
+            max_subscriptions: 100,
+            max_filters: 32,
+            ping_interval: 55,
+            respect_forwarded_headers: false,
+            relay_name: "searchnos".to_string(),
+            relay_description: "searchnos relay".to_string(),
+        };
+        let app = app(&common, &args).await.unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+
+        let join_handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let response = tokio::task::spawn_blocking(move || {
+            let url = format!("ws://localhost:{port}");
+            let (mut socket, _) = tungstenite::connect(url).unwrap();
+            let keys = nostr_sdk::Keys::generate();
+            let event = nostr_sdk::EventBuilder::text_note("hello")
+                .sign_with_keys(&keys)
+                .unwrap();
+            socket
+                .send(tungstenite::Message::Text(
+                    format!("[\"EVENT\",{}]", event.as_json()).into(),
+                ))
+                .unwrap();
+            socket.read().unwrap().to_string()
+        })
+        .await
+        .unwrap();
+
+        assert!(response.contains("\"OK\""));
+        assert!(response.contains("false"));
+        assert!(response.contains("blocked: writes disabled"));
 
         join_handle.abort();
     }

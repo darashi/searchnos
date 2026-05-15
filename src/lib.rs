@@ -1,11 +1,9 @@
 pub mod app_state;
-pub mod auth;
 pub mod client_addr;
 pub mod config;
 pub mod db_adapter;
 pub mod index;
 pub mod maintenance;
 pub mod negentropy_sync;
-pub mod plugin;
 pub mod relay_sender;
 pub mod search;
