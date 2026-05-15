@@ -7,7 +7,7 @@ Connections must authenticate via [NIP-42](https://github.com/nostr-protocol/nip
 ## Current Limitations
 
 * No spam filtering. 🙁
-* No indexing configurations. Just does N-gram indexing with some normalization.
+* No indexing configurations. Full-text search with normalization.
 
 ## Usage
 
