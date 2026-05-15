@@ -406,6 +406,14 @@ pub struct CommonArgs {
 enum Command {
     /// Display basic database statistics
     Stat,
+    /// Compact the current hot event file into per-day partitions
+    Compact,
+    /// Rebuild partition search and visibility sidecars
+    Reindex {
+        /// Rebuild sidecars even when existing sidecar files are present
+        #[arg(long)]
+        force: bool,
+    },
     /// Export all events as newline-delimited JSON sorted by newest first
     Export,
     /// Dump stored ndb notes as length-prefixed binary records
@@ -643,6 +651,8 @@ async fn main() -> anyhow::Result<()> {
     let Cli { common, command } = Cli::parse();
     match command {
         Command::Stat => cmd::stat::run(common).await,
+        Command::Compact => cmd::compact::run(common).await,
+        Command::Reindex { force } => cmd::reindex::run(common, force).await,
         Command::Export => cmd::export::run(common).await,
         Command::Dump { output_path } => cmd::dump::run(common, output_path).await,
         Command::Load { input_paths } => cmd::load::run(common, input_paths).await,

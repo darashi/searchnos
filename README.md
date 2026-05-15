@@ -33,10 +33,19 @@ Load stored ndb notes from one or more length-prefixed binary streams:
 
     cargo run -- --db-path ./data load path/to/events-1.dump path/to/events-2.dump
 
+Compact the current hot event file into per-day partitions:
+
+    cargo run -- --db-path ./data compact
+
+Rebuild partition search and visibility sidecars:
+
+    cargo run -- --db-path ./data reindex
+    cargo run -- --db-path ./data reindex --force
+
 `searchnos-db` takes an exclusive lock on the storage directory while it is open.
-Run commands such as `serve`, `import`, `load`, `dump`, `export`, and `stat` one
-at a time against the same `--db-path`. A second process that opens the same
-storage directory exits with a lock error.
+Run commands such as `serve`, `import`, `load`, `dump`, `export`, `stat`,
+`compact`, and `reindex` one at a time against the same `--db-path`. A second
+process that opens the same storage directory exits with a lock error.
 
 Search:
 
