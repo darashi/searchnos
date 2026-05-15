@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -9,7 +8,7 @@ use searchnos_db::{DumpProgress, SearchnosDB};
 use crate::{default_progress_style, CommonArgs};
 
 /// Dump stored ndb notes to a length-prefixed binary stream.
-pub async fn run(common: CommonArgs, output_path: PathBuf) -> Result<(), Box<dyn Error>> {
+pub async fn run(common: CommonArgs, output_path: PathBuf) -> anyhow::Result<()> {
     let db = SearchnosDB::open(&common.db_path)?;
     let file = File::create(&output_path)?;
     let writer = BufWriter::new(file);

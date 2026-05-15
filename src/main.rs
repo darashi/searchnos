@@ -15,19 +15,24 @@ use nostr_sdk::{
 use searchnos::app_state::AppState;
 use searchnos::auth::{generate_auth_challenge, handle_auth_message, ConnectionAuthState};
 use searchnos::client_addr::ClientAddr;
+use searchnos::config::{
+    parse_fetch_kinds, parse_src_relays, validate_db_runtime_config, DEFAULT_FETCH_KINDS,
+};
 use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::index::handlers::handle_event;
 use searchnos::plugin::WritePolicyPlugin;
 use searchnos::relay_sender::RelaySender;
-use searchnos::search::handlers::{handle_close, handle_req, ClosedError, SubscriptionHandle};
+use searchnos::search::handlers::{
+    handle_close, handle_req, ClientMessageError, SubscriptionManager,
+};
 use searchnos_db::{PurgePolicy as DbPurgePolicy, SearchnosDB, SearchnosDBOptions};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use std::{env, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -42,69 +47,6 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 const DB_PURGE_TICK_INTERVAL_SECS: u64 = 60;
 const DB_PURGE_BATCH_SIZE: usize = 1024;
 const DEFAULT_SEARCH_LIMIT: usize = 100;
-
-const DEFAULT_FETCH_KINDS: [Kind; 9] = [
-    Kind::Metadata,
-    Kind::TextNote,
-    Kind::EventDeletion,
-    Kind::LongFormTextNote,
-    Kind::ChannelCreation,
-    Kind::ChannelMetadata,
-    Kind::ChannelMessage,
-    Kind::ChannelHideMessage,
-    Kind::ChannelMuteUser,
-];
-
-fn parse_src_relays(values: &[String]) -> anyhow::Result<Vec<RelayUrl>> {
-    let mut relays = Vec::new();
-    for raw in values {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let relay =
-            RelayUrl::parse(trimmed).with_context(|| format!("invalid relay url '{}'", trimmed))?;
-        relays.push(relay);
-    }
-    Ok(relays)
-}
-
-fn parse_fetch_kinds(values: &[String]) -> anyhow::Result<Vec<Kind>> {
-    let mut kinds = Vec::new();
-    for raw in values {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let kind = Kind::from_str(trimmed)
-            .map_err(|err| anyhow!("invalid fetch kind '{}': {}", trimmed, err))?;
-        kinds.push(kind);
-    }
-    Ok(kinds)
-}
-
-struct DbRuntimeConfig {
-    batch_size: usize,
-    flush_interval: Duration,
-}
-
-fn validate_db_runtime_config(
-    batch_size: usize,
-    flush_interval_ms: u64,
-) -> anyhow::Result<DbRuntimeConfig> {
-    if batch_size == 0 {
-        return Err(anyhow!("db batch size must be greater than zero"));
-    }
-
-    if flush_interval_ms == 0 {
-        return Err(anyhow!("db flush interval must be greater than zero"));
-    }
-
-    Ok(DbRuntimeConfig {
-        batch_size,
-        flush_interval: Duration::from_millis(flush_interval_ms),
-    })
-}
 
 fn spawn_purge_worker(db: Arc<SearchnosDB>) {
     tokio::spawn(async move {
@@ -151,18 +93,19 @@ fn spawn_purge_worker(db: Arc<SearchnosDB>) {
 async fn process_message(
     state: Arc<AppState>,
     sender: RelaySender,
-    subscriptions: Arc<Mutex<HashMap<nostr_sdk::SubscriptionId, SubscriptionHandle>>>,
+    subscriptions: SubscriptionManager,
     addr: ClientAddr,
     msg: Frame,
     auth_state: Arc<Mutex<ConnectionAuthState>>,
-) -> anyhow::Result<()> {
+) -> Result<(), ClientMessageError> {
     match msg.opcode() {
         OpCode::Text => {
             let payload = msg.into_payload();
             let text =
                 std::str::from_utf8(&payload).context("received text frame with invalid UTF-8")?;
             tracing::info!("RECEIVED {}", text);
-            let client_message = nostr_sdk::ClientMessage::from_json(payload.as_ref())?;
+            let client_message = nostr_sdk::ClientMessage::from_json(payload.as_ref())
+                .map_err(anyhow::Error::from)?;
             match client_message {
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
@@ -182,7 +125,8 @@ async fn process_message(
                     .await
                 }
                 nostr_sdk::ClientMessage::Close(subscription_id) => {
-                    handle_close(subscriptions.clone(), addr.clone(), &subscription_id).await
+                    handle_close(subscriptions.clone(), addr.clone(), &subscription_id).await;
+                    Ok(())
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
                     let (challenge_to_send, authenticated_pubkeys) = {
@@ -235,7 +179,7 @@ async fn process_message(
                     .await?;
                     Ok(())
                 }
-                other => Err(anyhow!("invalid message type: {:?}", other)),
+                other => Err(anyhow!("invalid message type: {:?}", other).into()),
             }?
         }
         OpCode::Close => {
@@ -245,10 +189,10 @@ async fn process_message(
         OpCode::Pong => {}
         OpCode::Ping => {}
         OpCode::Binary => {
-            return Err(anyhow::anyhow!("binary websocket frames are not supported"));
+            return Err(anyhow::anyhow!("binary websocket frames are not supported").into());
         }
         OpCode::Continuation => {
-            return Err(anyhow::anyhow!("continuation frames are not supported"));
+            return Err(anyhow::anyhow!("continuation frames are not supported").into());
         }
     }
     Ok(())
@@ -321,7 +265,7 @@ async fn websocket(
         tracing::info!(active_connections, "new websocket connection");
         let (sender, mut receiver) = socket.split();
         let sender = RelaySender::new(sender);
-        let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+        let subscriptions = SubscriptionManager::new();
         let auth_state = Arc::new(Mutex::new(ConnectionAuthState::new(
             generate_auth_challenge(),
         )));
@@ -342,22 +286,26 @@ async fn websocket(
 
             if let Err(err) = res {
                 tracing::warn!("error processing message: {}", err);
-                if let Some(closed) = err.downcast_ref::<ClosedError>() {
-                    if let Err(send_err) = send_closed(
-                        sender.clone(),
-                        closed.subscription_id.clone(),
-                        &closed.to_string(),
-                    )
-                    .await
-                    {
-                        tracing::error!("error sending closed: {}", send_err);
-                        break;
+                match err {
+                    ClientMessageError::Closed {
+                        subscription_id,
+                        message,
+                    } => {
+                        if let Err(send_err) =
+                            send_closed(sender.clone(), subscription_id, &message).await
+                        {
+                            tracing::error!("error sending closed: {}", send_err);
+                            break;
+                        }
                     }
-                } else if let Err(send_err) =
-                    send_notice(sender.clone(), &format!("Error: {}", err)).await
-                {
-                    tracing::error!("error sending notice: {}", send_err);
-                    break;
+                    ClientMessageError::Internal(err) => {
+                        if let Err(send_err) =
+                            send_notice(sender.clone(), &format!("Error: {}", err)).await
+                        {
+                            tracing::error!("error sending notice: {}", send_err);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -368,15 +316,7 @@ async fn websocket(
             .saturating_sub(1);
         tracing::info!(active_connections, "websocket connection closed");
 
-        let pending_subscriptions: Vec<nostr_sdk::SubscriptionId> = {
-            let guard = subscriptions.lock().await;
-            guard.keys().cloned().collect()
-        };
-        for sub_id in pending_subscriptions {
-            if let Err(err) = handle_close(subscriptions.clone(), addr.clone(), &sub_id).await {
-                tracing::debug!(error = %err, subscription = %sub_id, "error during cleanup CLOSE");
-            }
-        }
+        subscriptions.close_all(addr.clone()).await;
 
         pinger_handle.abort();
         let authed_pubkeys = {
@@ -429,25 +369,20 @@ where
                         .map_err(|err| err.into_response())?;
                     let relay_info = state.relay_info.clone();
 
-                    let res = axum::response::Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", "application/json")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(relay_info)
-                        .unwrap()
+                    let res = (
+                        StatusCode::OK,
+                        [
+                            ("Content-Type", "application/json"),
+                            ("Access-Control-Allow-Origin", "*"),
+                        ],
+                        relay_info,
+                    )
                         .into_response();
 
                     return Err(res);
                 }
             }
-            let res = axum::response::Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "text/plain")
-                .body("Please use a Nostr client to connect.".to_string())
-                .unwrap()
-                .into_response();
-
-            Err(res)
+            Err((StatusCode::OK, "Please use a Nostr client to connect.").into_response())
         }
     }
 }
@@ -661,7 +596,7 @@ struct ImportArgs {
     fetch_kinds: Vec<String>,
 }
 
-async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn std::error::Error>> {
+async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
     let version = format!(
         "v{}-{}",
         env!("CARGO_PKG_VERSION"),
@@ -722,7 +657,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> Result<Router, Box<dyn st
     relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 40, 42, 50, 70]);
     relay_info.software = Some(pkg_name);
     relay_info.version = Some(version);
-    let relay_info = serde_json::to_string(&relay_info).unwrap();
+    let relay_info = serde_json::to_string(&relay_info)?;
 
     let public_relay_url = match &args.public_relay_url {
         Some(url) => {
@@ -792,7 +727,7 @@ fn init_tracing() {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     init_tracing();
     let Cli { common, command } = Cli::parse();
     match command {
@@ -805,7 +740,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn run_serve(common: CommonArgs, args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_serve(common: CommonArgs, args: ServeArgs) -> anyhow::Result<()> {
     let app = app(&common, &args).await?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
@@ -826,10 +761,7 @@ struct ImportSummary {
     skipped_kind: usize,
 }
 
-async fn run_import(
-    common: CommonArgs,
-    args: ImportArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_import(common: CommonArgs, args: ImportArgs) -> anyhow::Result<()> {
     let summary = tokio::task::spawn_blocking(move || import_blocking(common, args)).await??;
     tracing::info!(
         inserted = summary.inserted,
@@ -919,7 +851,7 @@ fn default_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "{percent:>3}%|{bar:40}| {pos}/{len} [{elapsed_precise}<{eta_precise}, {per_sec_ev}]",
     )
-    .unwrap()
+    .expect("default progress template must be valid")
     .with_key(
         "per_sec_ev",
         |state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -932,7 +864,7 @@ fn byte_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "{percent:>3}%|{bar:40}| {bytes}/{total_bytes} [{elapsed_precise}<{eta_precise}, {bytes_per_sec}]",
     )
-    .unwrap()
+    .expect("byte progress template must be valid")
     .with_key(
         "bytes",
         |state: &ProgressState, w: &mut dyn std::fmt::Write| {

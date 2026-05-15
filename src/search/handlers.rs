@@ -1,7 +1,6 @@
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
-use anyhow::bail;
 use nostr_sdk::prelude::SubscriptionId;
 use nostr_sdk::Filter;
 use searchnos_db::StreamItem;
@@ -21,6 +20,75 @@ impl SubscriptionHandle {
     async fn shutdown(self) -> Result<(), tokio::task::JoinError> {
         let _ = self.cancel.send(true);
         self.task.await
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct SubscriptionManager {
+    inner: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
+}
+
+impl SubscriptionManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    async fn len_if_new(&self, subscription_id: &SubscriptionId) -> Option<usize> {
+        let guard = self.inner.lock().await;
+        if guard.contains_key(subscription_id) {
+            None
+        } else {
+            Some(guard.len())
+        }
+    }
+
+    async fn replace(
+        &self,
+        subscription_id: SubscriptionId,
+        handle: SubscriptionHandle,
+    ) -> Result<(), tokio::task::JoinError> {
+        let previous = {
+            let mut guard = self.inner.lock().await;
+            guard.remove(&subscription_id)
+        };
+
+        if let Some(old_handle) = previous {
+            old_handle.shutdown().await?;
+        }
+
+        let mut guard = self.inner.lock().await;
+        guard.insert(subscription_id, handle);
+        Ok(())
+    }
+
+    pub async fn close(&self, addr: ClientAddr, subscription_id: &SubscriptionId) {
+        log_close(&addr, subscription_id);
+
+        let handle = {
+            let mut guard = self.inner.lock().await;
+            guard.remove(subscription_id)
+        };
+
+        if let Some(handle) = handle {
+            if let Err(err) = handle.shutdown().await {
+                tracing::debug!(
+                    error = %err,
+                    subscription = %subscription_id,
+                    "subscription task terminated with error"
+                );
+            }
+        }
+    }
+
+    pub async fn close_all(&self, addr: ClientAddr) {
+        let ids = {
+            let guard = self.inner.lock().await;
+            guard.keys().cloned().collect::<Vec<_>>()
+        };
+
+        for subscription_id in ids {
+            self.close(addr.clone(), &subscription_id).await;
+        }
     }
 }
 
@@ -145,23 +213,42 @@ fn duration_to_ms(duration: Duration) -> u64 {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub struct ClosedError {
-    pub subscription_id: SubscriptionId,
-    message: String,
+pub enum ClientMessageError {
+    #[error("{message}")]
+    Closed {
+        subscription_id: SubscriptionId,
+        message: String,
+    },
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
 }
 
-impl std::fmt::Display for ClosedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl ClosedError {
-    fn new(subscription_id: SubscriptionId, message: String) -> Self {
-        Self {
+impl ClientMessageError {
+    fn closed(subscription_id: SubscriptionId, message: String) -> Self {
+        Self::Closed {
             subscription_id,
             message,
         }
+    }
+}
+
+fn log_close(addr: &ClientAddr, subscription_id: &SubscriptionId) {
+    let remote_addr = addr.socket_addr();
+    if let Some(header) = addr.forwarded_raw() {
+        tracing::info!(
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port(),
+            forwarded = header,
+            subscription = %subscription_id,
+            "CLOSE received"
+        );
+    } else {
+        tracing::info!(
+            remote_ip = %remote_addr.ip(),
+            remote_port = remote_addr.port(),
+            subscription = %subscription_id,
+            "CLOSE received"
+        );
     }
 }
 
@@ -185,57 +272,39 @@ fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
 pub async fn handle_req(
     state: Arc<AppState>,
     sender: RelaySender,
-    subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
+    subscriptions: SubscriptionManager,
     subscription_id: &SubscriptionId,
     filters: Vec<Filter>,
-) -> anyhow::Result<()> {
+) -> Result<(), ClientMessageError> {
     let filter_count = filters.len();
     let req_span = tracing::info_span!("req", subscription = %subscription_id, filter_count);
 
     let subscription_id = subscription_id.clone();
     async move {
-        {
-            let guard = subscriptions.lock().await;
-            if !guard.contains_key(&subscription_id) {
-                let num_ongoing_subscriptions = guard.len();
-                if num_ongoing_subscriptions + 1 > state.max_subscriptions {
-                    bail!(ClosedError::new(
-                        subscription_id.clone(),
-                        format!(
-                            "error: too many ongoing subscriptions: {}",
-                            num_ongoing_subscriptions
-                        )
-                    ));
-                }
+        if let Some(num_ongoing_subscriptions) = subscriptions.len_if_new(&subscription_id).await {
+            if num_ongoing_subscriptions + 1 > state.max_subscriptions {
+                return Err(ClientMessageError::closed(
+                    subscription_id.clone(),
+                    format!(
+                        "error: too many ongoing subscriptions: {}",
+                        num_ongoing_subscriptions
+                    ),
+                ));
             }
         }
 
         if filters.len() > state.max_filters {
-            bail!(ClosedError::new(
+            return Err(ClientMessageError::closed(
                 subscription_id.clone(),
-                format!("error: too many filters: {}", filters.len())
+                format!("error: too many filters: {}", filters.len()),
             ));
         }
 
         if let Err(message) = validate_search_filters(&filters) {
-            bail!(ClosedError::new(subscription_id.clone(), message));
+            return Err(ClientMessageError::closed(subscription_id.clone(), message));
         }
 
-        let filters_json = serde_json::to_string(&filters)?;
-        let previous = {
-            let mut guard = subscriptions.lock().await;
-            guard.remove(&subscription_id)
-        };
-
-        if let Some(old_handle) = previous {
-            if let Err(err) = old_handle.shutdown().await {
-                tracing::debug!(
-                    error = %err,
-                    subscription = %subscription_id,
-                    "previous subscription task terminated with error"
-                );
-            }
-        }
+        let filters_json = serde_json::to_string(&filters).map_err(anyhow::Error::from)?;
 
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = spawn_subscription_task(
@@ -251,9 +320,12 @@ pub async fn handle_req(
             task,
         };
 
-        {
-            let mut guard = subscriptions.lock().await;
-            guard.insert(subscription_id.clone(), handle);
+        if let Err(err) = subscriptions.replace(subscription_id.clone(), handle).await {
+            tracing::debug!(
+                error = %err,
+                subscription = %subscription_id,
+                "previous subscription task terminated with error"
+            );
         }
 
         Ok(())
@@ -263,44 +335,11 @@ pub async fn handle_req(
 }
 
 pub async fn handle_close(
-    subscriptions: Arc<Mutex<HashMap<SubscriptionId, SubscriptionHandle>>>,
+    subscriptions: SubscriptionManager,
     addr: ClientAddr,
     subscription_id: &SubscriptionId,
-) -> anyhow::Result<()> {
-    let remote_addr = addr.socket_addr();
-    if let Some(header) = addr.forwarded_raw() {
-        tracing::info!(
-            remote_ip = %remote_addr.ip(),
-            remote_port = remote_addr.port(),
-            forwarded = header,
-            subscription = %subscription_id,
-            "CLOSE received"
-        );
-    } else {
-        tracing::info!(
-            remote_ip = %remote_addr.ip(),
-            remote_port = remote_addr.port(),
-            subscription = %subscription_id,
-            "CLOSE received"
-        );
-    }
-
-    let handle = {
-        let mut guard = subscriptions.lock().await;
-        guard.remove(subscription_id)
-    };
-
-    if let Some(handle) = handle {
-        if let Err(err) = handle.shutdown().await {
-            tracing::debug!(
-                error = %err,
-                subscription = %subscription_id,
-                "subscription task terminated with error"
-            );
-        }
-    }
-
-    Ok(())
+) {
+    subscriptions.close(addr, subscription_id).await;
 }
 
 #[cfg(test)]

@@ -1,9 +1,7 @@
-use std::error::Error;
-
 use crate::CommonArgs;
 use searchnos_db::{DatabaseStats, SearchnosDB};
 
-pub async fn run(common: CommonArgs) -> Result<(), Box<dyn Error>> {
+pub async fn run(common: CommonArgs) -> anyhow::Result<()> {
     let db = SearchnosDB::open(&common.db_path)?;
     let stats = db.database_stats()?;
 

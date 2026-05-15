@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -9,7 +8,7 @@ use searchnos_db::{LoadProgress, SearchnosDB};
 use crate::{byte_progress_style, CommonArgs};
 
 /// Load stored ndb notes from a length-prefixed binary stream.
-pub async fn run(common: CommonArgs, input_path: PathBuf) -> Result<(), Box<dyn Error>> {
+pub async fn run(common: CommonArgs, input_path: PathBuf) -> anyhow::Result<()> {
     let db = SearchnosDB::open(&common.db_path)?;
     let file = File::open(&input_path)?;
     let total_bytes = file.metadata()?.len();

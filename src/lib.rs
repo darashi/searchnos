@@ -1,6 +1,7 @@
 pub mod app_state;
 pub mod auth;
 pub mod client_addr;
+pub mod config;
 pub mod index;
 pub mod plugin;
 pub mod relay_sender;
