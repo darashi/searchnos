@@ -1,6 +1,6 @@
 use anyhow::Context;
 use ndb::{NdbNote, NdbNoteBuf};
-use searchnos_db::{SearchnosDB, SearchnosDBOptions};
+use searchnos_db::{InsertOptions, SearchnosDB, SearchnosDBOptions};
 use std::path::Path;
 
 pub fn open_db(db_path: &str) -> anyhow::Result<SearchnosDB> {
@@ -47,6 +47,6 @@ pub fn packet_event_id(packet: &[u8]) -> anyhow::Result<[u8; 32]> {
 }
 
 pub fn insert_event_json(db: &SearchnosDB, event_json: &str) -> anyhow::Result<()> {
-    db.insert_event_json(event_json)
+    db.insert_event_json(event_json, InsertOptions::default())
         .map_err(|err| anyhow::anyhow!("failed to insert event: {err}"))
 }

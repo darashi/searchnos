@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ndb::{NdbNote, NdbNoteBuf};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostr_sdk::Kind;
-use searchnos_db::SearchnosDB;
+use searchnos_db::{InsertOptions, SearchnosDB};
 use serde_json::Value;
 use tracing::{info, warn};
 use tungstenite::stream::MaybeTlsStream;
@@ -126,7 +126,12 @@ fn reconcile_unix_day(
             }
             let id = encode_hex(event.id());
             if seen_ids.insert(id) {
-                db.insert_event_json(&event_json)?;
+                db.insert_event_json(
+                    &event_json,
+                    InsertOptions {
+                        notify_subscribers: false,
+                    },
+                )?;
                 stats.stored += 1;
             }
         }
