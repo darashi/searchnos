@@ -36,9 +36,10 @@ pub fn reconcile_unix_days(
     unix_days: &[u64],
     kinds: &[Kind],
 ) -> Result<(), Box<dyn Error>> {
-    for unix_day in unix_days {
-        for relay in relays {
-            match reconcile_unix_day(db.clone(), relay, *unix_day, kinds) {
+    for relay in relays {
+        let mut connection = RelayConnection::new(relay);
+        for unix_day in unix_days {
+            match reconcile_unix_day(db.clone(), &mut connection, *unix_day, kinds) {
                 Ok(stats) => {
                     info!(
                         %relay,
@@ -59,6 +60,39 @@ pub fn reconcile_unix_days(
     Ok(())
 }
 
+struct RelayConnection<'a> {
+    relay: &'a str,
+    socket: Option<RelaySocket>,
+}
+
+impl<'a> RelayConnection<'a> {
+    fn new(relay: &'a str) -> Self {
+        Self {
+            relay,
+            socket: None,
+        }
+    }
+
+    fn socket(&mut self) -> Result<&mut RelaySocket, Box<dyn Error>> {
+        if self.socket.is_none() {
+            self.connect()?;
+        }
+        Ok(self.socket.as_mut().expect("socket should be connected"))
+    }
+
+    fn reconnect(&mut self) -> Result<(), Box<dyn Error>> {
+        self.socket = None;
+        info!(relay = %self.relay, "reconnecting to relay for negentropy reconcile");
+        self.connect()
+    }
+
+    fn connect(&mut self) -> Result<(), Box<dyn Error>> {
+        self.socket = Some(connect_socket(self.relay)?);
+        info!(relay = %self.relay, "connected to relay for negentropy reconcile");
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct ReconcileStats {
     local: usize,
@@ -69,10 +103,34 @@ struct ReconcileStats {
 
 fn reconcile_unix_day(
     db: Arc<SearchnosDB>,
-    relay: &str,
+    connection: &mut RelayConnection<'_>,
     unix_day: u64,
     kinds: &[Kind],
 ) -> Result<ReconcileStats, Box<dyn Error>> {
+    loop {
+        match reconcile_unix_day_once(db.clone(), connection, unix_day, kinds) {
+            Ok(stats) => return Ok(stats),
+            Err(err) if is_connection_lost(err.as_ref()) => {
+                warn!(
+                    relay = %connection.relay,
+                    unix_day,
+                    %err,
+                    "relay connection lost during negentropy reconcile"
+                );
+                connection.reconnect()?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn reconcile_unix_day_once(
+    db: Arc<SearchnosDB>,
+    connection: &mut RelayConnection<'_>,
+    unix_day: u64,
+    kinds: &[Kind],
+) -> Result<ReconcileStats, Box<dyn Error>> {
+    let relay = connection.relay;
     let since = unix_day
         .checked_mul(86_400)
         .ok_or("unix day is out of range")?;
@@ -89,9 +147,8 @@ fn reconcile_unix_day(
 
     let mut negentropy = Negentropy::borrowed(&negentropy_storage, NEGENTROPY_FRAME_SIZE_LIMIT)?;
     let initial_message = negentropy.initiate()?;
-    let mut socket = connect_socket(relay)?;
     let need_ids = reconcile_missing_ids(
-        &mut socket,
+        connection.socket()?,
         relay,
         unix_day,
         range,
@@ -121,7 +178,7 @@ fn reconcile_unix_day(
     let total_batches = need_ids.len().div_ceil(FETCH_BATCH_SIZE);
     let mut last_progress_log = Instant::now();
     for (batch_index, chunk) in need_ids.chunks(FETCH_BATCH_SIZE).enumerate() {
-        let events = fetch_events_by_ids(&mut socket, relay, chunk)?;
+        let events = fetch_events_by_ids(connection.socket()?, relay, chunk)?;
         let fetched = events.len();
         for event_json in events {
             let note = match NdbNoteBuf::from_json(&event_json) {
@@ -169,6 +226,15 @@ fn reconcile_unix_day(
     }
 
     Ok(stats)
+}
+
+fn is_connection_lost(error: &(dyn Error + 'static)) -> bool {
+    if error.downcast_ref::<tungstenite::Error>().is_some() {
+        return true;
+    }
+
+    let message = error.to_string();
+    message.starts_with("relay closed connection:")
 }
 
 fn local_negentropy_items(
@@ -522,5 +588,19 @@ mod tests {
         assert!(is_allowed_kind(1, &[Kind::TextNote]));
         assert!(!is_allowed_kind(0, &[Kind::TextNote]));
         assert!(is_allowed_kind(0, &[]));
+    }
+
+    #[test]
+    fn connection_lost_matches_websocket_disconnects() {
+        assert!(is_connection_lost(&tungstenite::Error::ConnectionClosed));
+
+        let error: Box<dyn Error> = "relay closed connection: None".into();
+        assert!(is_connection_lost(error.as_ref()));
+    }
+
+    #[test]
+    fn connection_lost_does_not_match_subscription_closed() {
+        let error: Box<dyn Error> = "negentropy subscription closed: unsupported".into();
+        assert!(!is_connection_lost(error.as_ref()));
     }
 }
