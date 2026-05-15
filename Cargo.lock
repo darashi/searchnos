@@ -1662,7 +1662,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db#8f9a02ae10ae2d5f49027b5bbdb7455ba9e32911"
+source = "git+https://github.com/darashi/searchnos-db#df0e32c8bcfbb05561d2c56bfc3604b0fbd89242"
 dependencies = [
  "clap",
  "fs2",
