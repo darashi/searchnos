@@ -3,13 +3,19 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Instant, SystemTime};
 
+use nostr_sdk::Kind;
 use searchnos_db::SearchnosDB;
 use tracing::{info, warn};
 
 use crate::negentropy_sync;
 
 #[cfg(unix)]
-pub fn spawn_negentropy_signal_listener(db: Arc<SearchnosDB>, relays: Vec<String>, days: u64) {
+pub fn spawn_negentropy_signal_listener(
+    db: Arc<SearchnosDB>,
+    relays: Vec<String>,
+    days: u64,
+    kinds: Vec<Kind>,
+) {
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
 
@@ -37,14 +43,21 @@ pub fn spawn_negentropy_signal_listener(db: Arc<SearchnosDB>, relays: Vec<String
 
             let db = db.clone();
             let relays = relays.clone();
+            let kinds = kinds.clone();
             let running = running.clone();
             thread::Builder::new()
                 .name("searchnos-negentropy".to_owned())
                 .spawn(move || {
                     let started_at = Instant::now();
                     let unix_days = recent_unix_days(days);
-                    info!(days, "received SIGUSR2, starting negentropy reconcile");
-                    if let Err(err) = negentropy_sync::reconcile_unix_days(db, &relays, &unix_days)
+                    let kind_list: Vec<u16> = kinds.iter().map(|kind| u16::from(*kind)).collect();
+                    info!(
+                        days,
+                        kinds = ?kind_list,
+                        "received SIGUSR2, starting negentropy reconcile"
+                    );
+                    if let Err(err) =
+                        negentropy_sync::reconcile_unix_days(db, &relays, &unix_days, &kinds)
                     {
                         warn!(%err, "negentropy reconcile failed");
                     }
@@ -62,7 +75,13 @@ pub fn spawn_negentropy_signal_listener(db: Arc<SearchnosDB>, relays: Vec<String
 }
 
 #[cfg(not(unix))]
-pub fn spawn_negentropy_signal_listener(_db: Arc<SearchnosDB>, _relays: Vec<String>, _days: u64) {}
+pub fn spawn_negentropy_signal_listener(
+    _db: Arc<SearchnosDB>,
+    _relays: Vec<String>,
+    _days: u64,
+    _kinds: Vec<Kind>,
+) {
+}
 
 pub fn negentropy_relays(relays: Vec<String>) -> Vec<String> {
     relays

@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ndb::{NdbNote, NdbNoteBuf};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
+use nostr_sdk::Kind;
 use searchnos_db::SearchnosDB;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -21,14 +22,21 @@ static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type RelaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
 type LocalNegentropyItem = (u64, [u8; 32]);
 
+#[derive(Clone, Copy)]
+struct UnixDayRange {
+    since: u64,
+    until: u64,
+}
+
 pub fn reconcile_unix_days(
     db: Arc<SearchnosDB>,
     relays: &[String],
     unix_days: &[u64],
+    kinds: &[Kind],
 ) -> Result<(), Box<dyn Error>> {
     for relay in relays {
         for unix_day in unix_days {
-            match reconcile_unix_day(db.clone(), relay, *unix_day) {
+            match reconcile_unix_day(db.clone(), relay, *unix_day, kinds) {
                 Ok(stats) => {
                     info!(
                         %relay,
@@ -61,6 +69,7 @@ fn reconcile_unix_day(
     db: Arc<SearchnosDB>,
     relay: &str,
     unix_day: u64,
+    kinds: &[Kind],
 ) -> Result<ReconcileStats, Box<dyn Error>> {
     let since = unix_day
         .checked_mul(86_400)
@@ -68,7 +77,8 @@ fn reconcile_unix_day(
     let until = since
         .checked_add(86_399)
         .ok_or("unix day is out of range")?;
-    let local_items = local_negentropy_items(db.as_ref(), since, until)?;
+    let range = UnixDayRange { since, until };
+    let local_items = local_negentropy_items(db.as_ref(), range, kinds)?;
     let mut negentropy_storage = NegentropyStorageVector::with_capacity(local_items.len());
     for (created_at, id) in &local_items {
         negentropy_storage.insert(*created_at, Id::from_byte_array(*id))?;
@@ -82,8 +92,8 @@ fn reconcile_unix_day(
         &mut socket,
         relay,
         unix_day,
-        since,
-        until,
+        range,
+        kinds,
         initial_message,
         &mut negentropy,
     )?;
@@ -106,7 +116,11 @@ fn reconcile_unix_day(
                 }
             };
             let event = NdbNote::from_bytes(note.as_bytes())?;
-            if event.created_at() < since || event.created_at() > until {
+            if event.created_at() < range.since || event.created_at() > range.until {
+                stats.invalid += 1;
+                continue;
+            }
+            if !is_allowed_kind(event.kind(), kinds) {
                 stats.invalid += 1;
                 continue;
             }
@@ -123,14 +137,10 @@ fn reconcile_unix_day(
 
 fn local_negentropy_items(
     db: &SearchnosDB,
-    since: u64,
-    until: u64,
+    range: UnixDayRange,
+    kinds: &[Kind],
 ) -> Result<Vec<LocalNegentropyItem>, Box<dyn Error>> {
-    let filters_json = serde_json::json!([{
-        "since": since,
-        "until": until
-    }])
-    .to_string();
+    let filters_json = Value::Array(vec![event_filter(range, kinds)]).to_string();
     let mut items = Vec::new();
     db.stream_query(&filters_json, |event_json| {
         let Ok(note) = NdbNoteBuf::from_json(&event_json) else {
@@ -151,13 +161,13 @@ fn reconcile_missing_ids(
     socket: &mut RelaySocket,
     relay: &str,
     unix_day: u64,
-    since: u64,
-    until: u64,
+    range: UnixDayRange,
+    kinds: &[Kind],
     initial_message: Vec<u8>,
     negentropy: &mut Negentropy<'_, NegentropyStorageVector>,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let subscription = format!("searchnos-negentropy-{unix_day}-{}", unique_suffix());
-    send_neg_open(socket, &subscription, since, until, &initial_message)?;
+    send_neg_open(socket, &subscription, range, kinds, &initial_message)?;
     let mut need_ids = Vec::new();
     let mut seen_need_ids = HashSet::new();
     let mut round = 0_u64;
@@ -268,14 +278,14 @@ fn connect_socket(relay: &str) -> Result<RelaySocket, Box<dyn Error>> {
 fn send_neg_open(
     socket: &mut RelaySocket,
     subscription: &str,
-    since: u64,
-    until: u64,
+    range: UnixDayRange,
+    kinds: &[Kind],
     message: &[u8],
 ) -> Result<(), Box<dyn Error>> {
     let request = Value::Array(vec![
         Value::String("NEG-OPEN".to_owned()),
         Value::String(subscription.to_owned()),
-        day_filter(since, until),
+        event_filter(range, kinds),
         Value::String(encode_hex(message)),
     ]);
     socket.send(Message::Text(request.to_string().into()))?;
@@ -314,10 +324,13 @@ fn send_close(socket: &mut RelaySocket, subscription: &str) -> Result<(), Box<dy
     Ok(())
 }
 
-fn day_filter(since: u64, until: u64) -> Value {
+fn event_filter(range: UnixDayRange, kinds: &[Kind]) -> Value {
     let mut filter = serde_json::Map::new();
-    filter.insert("since".to_owned(), Value::Number(since.into()));
-    filter.insert("until".to_owned(), Value::Number(until.into()));
+    filter.insert("since".to_owned(), Value::Number(range.since.into()));
+    filter.insert("until".to_owned(), Value::Number(range.until.into()));
+    if !kinds.is_empty() {
+        filter.insert("kinds".to_owned(), kind_values(kinds));
+    }
     Value::Object(filter)
 }
 
@@ -326,6 +339,24 @@ fn ids_filter(ids: &[String]) -> Value {
     let mut filter = serde_json::Map::new();
     filter.insert("ids".to_owned(), Value::Array(ids));
     Value::Object(filter)
+}
+
+fn kind_values(kinds: &[Kind]) -> Value {
+    Value::Array(
+        kinds
+            .iter()
+            .map(|kind| Value::Number(u16::from(*kind).into()))
+            .collect(),
+    )
+}
+
+fn is_allowed_kind(kind: u32, kinds: &[Kind]) -> bool {
+    if kinds.is_empty() {
+        return true;
+    }
+    kinds
+        .iter()
+        .any(|allowed_kind| u32::from(u16::from(*allowed_kind)) == kind)
 }
 
 fn read_text_message(socket: &mut RelaySocket) -> Result<String, Box<dyn Error>> {
@@ -389,4 +420,55 @@ fn unique_suffix() -> String {
         .unwrap_or(0);
     let counter = SUBSCRIPTION_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{millis}-{counter}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_filter_includes_kinds_when_configured() {
+        let filter = event_filter(
+            UnixDayRange {
+                since: 100,
+                until: 199,
+            },
+            &[Kind::TextNote, Kind::LongFormTextNote],
+        );
+
+        assert_eq!(
+            filter,
+            serde_json::json!({
+                "since": 100,
+                "until": 199,
+                "kinds": [1, 30023]
+            })
+        );
+    }
+
+    #[test]
+    fn event_filter_omits_empty_kinds() {
+        let filter = event_filter(
+            UnixDayRange {
+                since: 100,
+                until: 199,
+            },
+            &[],
+        );
+
+        assert_eq!(
+            filter,
+            serde_json::json!({
+                "since": 100,
+                "until": 199
+            })
+        );
+    }
+
+    #[test]
+    fn allowed_kind_matches_configured_kinds() {
+        assert!(is_allowed_kind(1, &[Kind::TextNote]));
+        assert!(!is_allowed_kind(0, &[Kind::TextNote]));
+        assert!(is_allowed_kind(0, &[]));
+    }
 }

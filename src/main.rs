@@ -461,7 +461,7 @@ struct ServeArgs {
 
     /// Comma-separated list of relays to reconcile with negentropy on SIGUSR2
     #[arg(
-        long = "negentropy-relay",
+        long = "negentropy-relays",
         env = "NEGENTROPY_RELAYS",
         value_delimiter = ',',
         num_args = 0..
@@ -540,8 +540,9 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
     tracing::info!("{} {}", pkg_name, version);
 
     let src_relays = parse_src_relays(&args.src_relays)?;
+    let negentropy_relays = negentropy_relays(args.negentropy_relays.clone());
     let mut fetch_kinds = parse_fetch_kinds(&args.fetch_kinds)?;
-    if fetch_kinds.is_empty() && !src_relays.is_empty() {
+    if fetch_kinds.is_empty() && (!src_relays.is_empty() || !negentropy_relays.is_empty()) {
         fetch_kinds = DEFAULT_FETCH_KINDS.to_vec();
     }
     if !fetch_kinds.is_empty() {
@@ -610,13 +611,14 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         let relay_list: Vec<String> = src_relays.iter().map(|url| url.to_string()).collect();
         let kind_list: Vec<u16> = fetch_kinds.iter().map(|kind| u16::from(*kind)).collect();
         tracing::info!(relays = ?relay_list, kinds = ?kind_list, "configured source fetching");
-        let _fetch_handle = spawn_fetcher(app_state.clone(), src_relays, fetch_kinds);
+        let _fetch_handle = spawn_fetcher(app_state.clone(), src_relays, fetch_kinds.clone());
     }
 
-    let negentropy_relays = negentropy_relays(args.negentropy_relays.clone());
     if !negentropy_relays.is_empty() {
+        let kind_list: Vec<u16> = fetch_kinds.iter().map(|kind| u16::from(*kind)).collect();
         tracing::info!(
             relays = ?negentropy_relays,
+            kinds = ?kind_list,
             days = args.negentropy_days,
             "configured negentropy reconcile"
         );
@@ -625,6 +627,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         app_state.db.clone(),
         negentropy_relays,
         args.negentropy_days,
+        fetch_kinds,
     );
 
     let app = Router::new()
