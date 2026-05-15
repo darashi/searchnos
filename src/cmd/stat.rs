@@ -1,9 +1,12 @@
 use crate::CommonArgs;
-use searchnos_db::{DatabaseStats, SearchnosDB};
+use searchnos::db_adapter::open_db;
+use searchnos_db::DatabaseStats;
 
 pub async fn run(common: CommonArgs) -> anyhow::Result<()> {
-    let db = SearchnosDB::open(&common.db_path)?;
-    let stats = db.database_stats()?;
+    let db = open_db(&common.db_path)?;
+    let stats = db
+        .database_stats()
+        .map_err(|err| anyhow::anyhow!("failed to collect database stats: {err}"))?;
 
     if stats.is_empty() {
         println!("No databases found");

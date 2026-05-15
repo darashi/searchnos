@@ -15,17 +15,16 @@ use nostr_sdk::{
 use searchnos::app_state::AppState;
 use searchnos::auth::{generate_auth_challenge, handle_auth_message, ConnectionAuthState};
 use searchnos::client_addr::ClientAddr;
-use searchnos::config::{
-    parse_fetch_kinds, parse_src_relays, validate_db_runtime_config, DEFAULT_FETCH_KINDS,
-};
+use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
+use searchnos::db_adapter::{insert_event_json, open_db};
 use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::index::handlers::handle_event;
+use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::plugin::WritePolicyPlugin;
 use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
     handle_close, handle_req, ClientMessageError, SubscriptionManager,
 };
-use searchnos_db::{PurgePolicy as DbPurgePolicy, SearchnosDB, SearchnosDBOptions};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -35,7 +34,6 @@ use std::time::Duration;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time;
 use tracing::{Instrument, Span};
 use yawc::{
     frame::{Frame, OpCode},
@@ -43,52 +41,6 @@ use yawc::{
 };
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
-
-const DB_PURGE_TICK_INTERVAL_SECS: u64 = 60;
-const DB_PURGE_BATCH_SIZE: usize = 1024;
-const DEFAULT_SEARCH_LIMIT: usize = 100;
-
-fn spawn_purge_worker(db: Arc<SearchnosDB>) {
-    tokio::spawn(async move {
-        let tick_interval = Duration::from_secs(DB_PURGE_TICK_INTERVAL_SECS);
-        let mut ticker = time::interval(tick_interval);
-        let mut run_id: u64 = 0;
-        loop {
-            ticker.tick().await;
-            run_id = run_id.saturating_add(1);
-            let started_at = std::time::Instant::now();
-            tracing::info!(
-                run_id,
-                batch_size = DB_PURGE_BATCH_SIZE,
-                tick_interval_secs = DB_PURGE_TICK_INTERVAL_SECS,
-                "starting purge run"
-            );
-
-            let db_for_run = db.clone();
-            match tokio::task::spawn_blocking(move || {
-                db_for_run.purge_stale_events(DB_PURGE_BATCH_SIZE)
-            })
-            .await
-            {
-                Ok(Ok(removed)) => {
-                    tracing::info!(
-                        run_id,
-                        removed,
-                        elapsed_ms = started_at.elapsed().as_millis() as u64,
-                        "purge run completed"
-                    );
-                }
-                Ok(Err(err)) => {
-                    tracing::error!(error = %err, "failed to purge stale events");
-                }
-                Err(err) => {
-                    tracing::error!(error = %err, "purge worker stopped unexpectedly");
-                    break;
-                }
-            }
-        }
-    });
-}
 
 async fn process_message(
     state: Arc<AppState>,
@@ -461,10 +413,11 @@ enum Command {
         /// Path to the output dump file
         output_path: PathBuf,
     },
-    /// Load stored ndb notes from a length-prefixed binary dump
+    /// Load stored ndb notes from length-prefixed binary dumps
     Load {
-        /// Path to the input dump file
-        input_path: PathBuf,
+        /// Paths to the input dump files
+        #[arg(value_name = "INPUT_PATH", required = true, num_args = 1..)]
+        input_paths: Vec<PathBuf>,
     },
     Serve(ServeArgs),
     Import(ImportArgs),
@@ -475,22 +428,6 @@ struct ServeArgs {
     /// Port to listen on
     #[arg(long, env, default_value_t = 3000)]
     port: u16,
-
-    /// Number of events to batch before flushing to LMDB
-    #[arg(
-        long = "db-batch-size",
-        env = "SEARCHNOS_DB_BATCH_SIZE",
-        default_value_t = 4_096
-    )]
-    db_batch_size: usize,
-
-    /// Maximum interval in milliseconds before pending events are flushed
-    #[arg(
-        long = "db-flush-interval-ms",
-        env = "SEARCHNOS_DB_FLUSH_INTERVAL_MS",
-        default_value_t = 100
-    )]
-    db_flush_interval_ms: u64,
 
     /// Public relay URL used to validate AUTH events (optional)
     #[arg(long = "public-relay-url", env = "PUBLIC_RELAY_URL")]
@@ -514,6 +451,19 @@ struct ServeArgs {
     )]
     fetch_kinds: Vec<String>,
 
+    /// Comma-separated list of relays to reconcile with negentropy on SIGUSR2
+    #[arg(
+        long = "negentropy-relay",
+        env = "NEGENTROPY_RELAYS",
+        value_delimiter = ',',
+        num_args = 0..
+    )]
+    negentropy_relays: Vec<String>,
+
+    /// Number of recent UTC days to reconcile with negentropy
+    #[arg(long = "negentropy-days", env = "NEGENTROPY_DAYS", default_value_t = 2)]
+    negentropy_days: u64,
+
     /// Maximum number of subscriptions per client
     #[arg(long, env, default_value_t = 20)]
     max_subscriptions: usize,
@@ -525,15 +475,6 @@ struct ServeArgs {
     /// Ping interval in seconds
     #[arg(long, env, default_value_t = 55)]
     ping_interval: u64,
-
-    /// Purge specifications for the database (e.g. "30d", "1:never", "2:3d", "3:purge")
-    #[arg(
-        long = "db-purge",
-        env = "SEARCHNOS_DB_PURGE",
-        value_delimiter = ',',
-        num_args = 1..
-    )]
-    db_purge: Option<Vec<String>>,
 
     /// Use Forwarded header when logging client addresses
     #[arg(long = "respect-forwarded", env = "SEARCHNOS_RESPECT_FORWARDED")]
@@ -570,22 +511,6 @@ struct ImportArgs {
     #[arg(value_name = "JSONL_PATH")]
     import_path: String,
 
-    /// Number of events to batch before flushing to LMDB
-    #[arg(
-        long = "db-batch-size",
-        env = "SEARCHNOS_DB_BATCH_SIZE",
-        default_value_t = 4_096
-    )]
-    db_batch_size: usize,
-
-    /// Maximum interval in milliseconds before pending events are flushed
-    #[arg(
-        long = "db-flush-interval-ms",
-        env = "SEARCHNOS_DB_FLUSH_INTERVAL_MS",
-        default_value_t = 100
-    )]
-    db_flush_interval_ms: u64,
-
     /// Comma-separated list of event kind numbers to import
     #[arg(
         long = "fetch-kinds",
@@ -606,8 +531,6 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 
     tracing::info!("{} {}", pkg_name, version);
 
-    let db_runtime = validate_db_runtime_config(args.db_batch_size, args.db_flush_interval_ms)?;
-
     let src_relays = parse_src_relays(&args.src_relays)?;
     let mut fetch_kinds = parse_fetch_kinds(&args.fetch_kinds)?;
     if fetch_kinds.is_empty() && !src_relays.is_empty() {
@@ -618,38 +541,12 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         fetch_kinds.dedup();
     }
 
-    let purge_policy = match args.db_purge.as_ref() {
-        Some(specs) => {
-            let policy = DbPurgePolicy::from_specs(specs.iter().map(|s| s.as_str()))
-                .map_err(|err| anyhow!("invalid db purge spec: {err}"))?;
-            tracing::info!(specs = ?specs, "configured database purge policy");
-            Some(policy)
-        }
-        None => None,
-    };
-
     tracing::info!(
         path = %common.db_path,
-        batch_size = args.db_batch_size,
-        flush_interval_ms = args.db_flush_interval_ms,
-        purge_enabled = purge_policy.is_some(),
         "opening searchnos-db"
     );
 
-    let db_options = SearchnosDBOptions {
-        batch_size: db_runtime.batch_size,
-        flush_interval: db_runtime.flush_interval,
-        purge_policy: purge_policy.clone(),
-        default_limit: Some(DEFAULT_SEARCH_LIMIT),
-        max_limit: Some(1000),
-        ..SearchnosDBOptions::default()
-    };
-
-    let db = Arc::new(SearchnosDB::open_with_options(&common.db_path, db_options)?);
-
-    if purge_policy.is_some() {
-        spawn_purge_worker(db.clone());
-    }
+    let db = Arc::new(open_db(&common.db_path)?);
 
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some(args.relay_name.clone());
@@ -708,6 +605,20 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         let _fetch_handle = spawn_fetcher(app_state.clone(), src_relays, fetch_kinds);
     }
 
+    let negentropy_relays = negentropy_relays(args.negentropy_relays.clone());
+    if !negentropy_relays.is_empty() {
+        tracing::info!(
+            relays = ?negentropy_relays,
+            days = args.negentropy_days,
+            "configured negentropy reconcile"
+        );
+    }
+    spawn_negentropy_signal_listener(
+        app_state.db.clone(),
+        negentropy_relays,
+        args.negentropy_days,
+    );
+
     let app = Router::new()
         .route("/ping", get(ping))
         .route("/", get(websocket_handler))
@@ -734,7 +645,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Stat => cmd::stat::run(common).await,
         Command::Export => cmd::export::run(common).await,
         Command::Dump { output_path } => cmd::dump::run(common, output_path).await,
-        Command::Load { input_path } => cmd::load::run(common, input_path).await,
+        Command::Load { input_paths } => cmd::load::run(common, input_paths).await,
         Command::Serve(args) => run_serve(common, args).await,
         Command::Import(args) => run_import(common, args).await,
     }
@@ -772,8 +683,6 @@ async fn run_import(common: CommonArgs, args: ImportArgs) -> anyhow::Result<()> 
 }
 
 fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary, anyhow::Error> {
-    let db_runtime = validate_db_runtime_config(args.db_batch_size, args.db_flush_interval_ms)?;
-
     let fetch_kinds = parse_fetch_kinds(&args.fetch_kinds)?;
     let allowed_kinds: Option<HashSet<Kind>> = if fetch_kinds.is_empty() {
         None
@@ -790,13 +699,7 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
         None
     };
 
-    let options = SearchnosDBOptions {
-        batch_size: db_runtime.batch_size,
-        flush_interval: db_runtime.flush_interval,
-        ..SearchnosDBOptions::default()
-    };
-
-    let db = SearchnosDB::open_with_options(&common.db_path, options)?;
+    let db = open_db(&common.db_path)?;
 
     let file = File::open(&args.import_path)
         .with_context(|| format!("failed to open {}", args.import_path))?;
@@ -823,7 +726,7 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
             }
         }
 
-        db.insert_event_json_owned(raw_line)
+        insert_event_json(&db, &raw_line)
             .with_context(|| format!("failed to import event at line {}", idx + 1))?;
         inserted += 1;
 
@@ -831,8 +734,6 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
             pb.inc(1);
         }
     }
-
-    db.flush()?;
 
     if let Some(pb) = progress_bar {
         pb.finish_with_message(format!(
@@ -931,15 +832,14 @@ mod tests {
         };
         let args = ServeArgs {
             port,
-            db_batch_size: 4_096,
-            db_flush_interval_ms: 100,
             public_relay_url: None,
             src_relays: Vec::new(),
             fetch_kinds: Vec::new(),
+            negentropy_relays: Vec::new(),
+            negentropy_days: 2,
             max_subscriptions: 100,
             max_filters: 32,
             ping_interval: 55,
-            db_purge: None,
             respect_forwarded_headers: false,
             write_policy_plugin: None,
             block_event_message: false,
@@ -1007,8 +907,6 @@ mod tests {
             },
             ImportArgs {
                 import_path: import_path.display().to_string(),
-                db_batch_size: 4_096,
-                db_flush_interval_ms: 100,
                 fetch_kinds: vec![Kind::TextNote.as_u16().to_string()],
             },
         )

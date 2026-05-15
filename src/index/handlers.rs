@@ -5,13 +5,14 @@ use tracing::Instrument;
 
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
+use crate::db_adapter::insert_event_json;
 use crate::plugin::{PluginDecision, PluginSourceType};
 use crate::relay_sender::RelaySender;
 
 pub async fn handle_update(state: Arc<AppState>, event: &Event) -> anyhow::Result<()> {
     let db = state.db.clone();
     let raw = event.as_json();
-    tokio::task::spawn_blocking(move || db.insert_event_json_owned(raw)).await??;
+    tokio::task::spawn_blocking(move || insert_event_json(&db, &raw)).await??;
     Ok(())
 }
 

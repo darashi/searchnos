@@ -21,6 +21,9 @@ tracing = "0.1.44"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 searchnos-db = { git = "https://github.com/darashi/searchnos-db" }
+ndb = { package = "ndb-note-rs", git = "https://github.com/darashi/ndb-note-rs" }
 indicatif = "0.18.4"
 chrono = "0.4.44"
 yawc = { version = "0.3.3", features = ["axum"] }
+negentropy = "0.5.0"
+tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }

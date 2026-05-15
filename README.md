@@ -29,9 +29,14 @@ Dump stored ndb notes to a length-prefixed binary stream:
 
     cargo run -- --db-path ./data dump path/to/events.dump
 
-Load stored ndb notes from a length-prefixed binary stream:
+Load stored ndb notes from one or more length-prefixed binary streams:
 
-    cargo run -- --db-path ./data load path/to/events.dump
+    cargo run -- --db-path ./data load path/to/events-1.dump path/to/events-2.dump
+
+`searchnos-db` takes an exclusive lock on the storage directory while it is open.
+Run commands such as `serve`, `import`, `load`, `dump`, `export`, and `stat` one
+at a time against the same `--db-path`. A second process that opens the same
+storage directory exits with a lock error.
 
 Search:
 
@@ -51,10 +56,9 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `PUBLIC_RELAY_URL` (optional): canonical relay URL used to validate `relay` tags in AUTH events (e.g. `wss://searchnos.example.com`).
 - `SRC_RELAYS` (optional): comma-separated list of source relay URLs to fetch events from.
 - `FETCH_KINDS` (optional): comma-separated list of numeric event kinds to fetch. When unset but `SRC_RELAYS` is provided, a default set matching the NIP-50 indexer is used (`0,1,5,30023,40,41,42,43,44`).
-- `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its LMDB files.
-- `SEARCHNOS_DB_BATCH_SIZE`: number of events buffered before the batch is flushed to LMDB (default `4096`).
-- `SEARCHNOS_DB_FLUSH_INTERVAL_MS`: maximum time in milliseconds to wait before flushing pending events (default `100`).
-- `SEARCHNOS_DB_PURGE` (optional): purge specifications applied to the database. Leave unset to keep events indefinitely. Example: `SEARCHNOS_DB_PURGE=90d,0:1y,40:1y,41:1y,30023:1y` keeps kinds `0`, `40`, `41`, and `30023` for one year and everything else for 90 days.
+- `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days.
+- `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
+- `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
 - `WRITE_POLICY_PLUGIN` (optional): command that implements the write policy plugin; it is compatible with the strfry relay plugin system. `EVENT` submissions always go through the plugin, and each request includes searchnos-specific NIP-42 extensions (documented below) so the plugin can enforce authentication-aware policies.
 - `BLOCK_EVENT_MESSAGE` (optional): when set (or `--block-event-message` is passed to the CLI), all `EVENT` messages are rejected before any plugin logic executes. This is useful when the relay should operate in read-only/search-only mode.

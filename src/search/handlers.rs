@@ -3,13 +3,15 @@ use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
 use nostr_sdk::prelude::SubscriptionId;
 use nostr_sdk::Filter;
-use searchnos_db::StreamItem;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+
+const DEFAULT_SEARCH_LIMIT: usize = 100;
+const MAX_SEARCH_LIMIT: usize = 1000;
 
 pub struct SubscriptionHandle {
     cancel: watch::Sender<bool>,
@@ -108,17 +110,13 @@ fn spawn_subscription_task(
     state: Arc<AppState>,
     sender: RelaySender,
     subscription_id: SubscriptionId,
-    filters_json: String,
+    filters: Vec<Filter>,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let started_at = Instant::now();
-
-        let subscription_result = tokio::select! {
-            result = async { state.db.clone().subscribe(&filters_json) } => result,
-            _ = wait_for_cancel(&mut cancel_rx) => return,
-        };
-        let mut subscription = match subscription_result {
+        let filters_json = serde_json::to_string(&filters).unwrap_or_else(|_| "[]".to_string());
+        let mut subscription = match state.db.clone().subscribe(&filters_json) {
             Ok(subscription) => subscription,
             Err(err) => {
                 let message = format!("error: failed to subscribe: {err}");
@@ -134,14 +132,14 @@ fn spawn_subscription_task(
         };
 
         let mut hits = 0usize;
-        let mut initial_done = false;
+        let mut snapshot_complete = false;
 
         loop {
             tokio::select! {
-                maybe_item = subscription.next() => {
-                    match maybe_item {
-                        Some(StreamItem::Event(event_json)) => {
-                            if !initial_done {
+                item = subscription.next() => {
+                    match item {
+                        Some(searchnos_db::StreamItem::Event(event_json)) => {
+                            if !snapshot_complete {
                                 hits += 1;
                             }
                             if let Err(err) = send_event_json(&sender, &subscription_id, &event_json).await {
@@ -153,8 +151,8 @@ fn spawn_subscription_task(
                                 break;
                             }
                         }
-                        Some(StreamItem::Eose) => {
-                            initial_done = true;
+                        Some(searchnos_db::StreamItem::Eose) => {
+                            snapshot_complete = true;
                             let elapsed_ms = duration_to_ms(started_at.elapsed());
                             tracing::info!(
                                 filters = %filters_json,
@@ -162,7 +160,6 @@ fn spawn_subscription_task(
                                 elapsed_ms,
                                 "search results sent"
                             );
-
                             if let Err(err) = send_eose(&sender, &subscription_id).await {
                                 tracing::warn!(
                                     error = %err,
@@ -172,7 +169,18 @@ fn spawn_subscription_task(
                                 break;
                             }
                         }
-                        None => break,
+                        None if snapshot_complete => break,
+                        None => {
+                            let message = "error: failed to subscribe: subscription ended before EOSE";
+                            if let Err(send_err) = send_closed(&sender, &subscription_id, message).await {
+                                tracing::warn!(
+                                    error = %send_err,
+                                    subscription = %subscription_id,
+                                    "failed to deliver CLOSED"
+                                );
+                            }
+                            break;
+                        }
                     }
                 }
                 _ = wait_for_cancel(&mut cancel_rx) => break,
@@ -269,6 +277,21 @@ fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_search_filters(filters: Vec<Filter>) -> Vec<Filter> {
+    filters
+        .into_iter()
+        .map(|mut filter| {
+            filter.limit = Some(
+                filter
+                    .limit
+                    .map_or(DEFAULT_SEARCH_LIMIT, |limit| limit)
+                    .min(MAX_SEARCH_LIMIT),
+            );
+            filter
+        })
+        .collect()
+}
+
 pub async fn handle_req(
     state: Arc<AppState>,
     sender: RelaySender,
@@ -304,14 +327,14 @@ pub async fn handle_req(
             return Err(ClientMessageError::closed(subscription_id.clone(), message));
         }
 
-        let filters_json = serde_json::to_string(&filters).map_err(anyhow::Error::from)?;
+        let filters = normalize_search_filters(filters);
 
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = spawn_subscription_task(
             state.clone(),
             sender.clone(),
             subscription_id.clone(),
-            filters_json,
+            filters,
             cancel_rx,
         );
 
