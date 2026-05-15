@@ -36,8 +36,8 @@ pub fn reconcile_unix_days(
     unix_days: &[u64],
     kinds: &[Kind],
 ) -> Result<(), Box<dyn Error>> {
-    for relay in relays {
-        for unix_day in unix_days {
+    for unix_day in unix_days {
+        for relay in relays {
             match reconcile_unix_day(db.clone(), relay, *unix_day, kinds) {
                 Ok(stats) => {
                     info!(
