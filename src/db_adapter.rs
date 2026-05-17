@@ -1,10 +1,24 @@
 use anyhow::Context;
 use ndb::{NdbNote, NdbNoteBuf};
 use searchnos_db::{InsertOptions, SearchnosDB, SearchnosDBOptions};
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 pub fn open_db(db_path: &str) -> anyhow::Result<SearchnosDB> {
-    open_db_with_options(db_path, SearchnosDBOptions::default())
+    open_db_with_compact_workers(db_path, None)
+}
+
+pub fn open_db_with_compact_workers(
+    db_path: &str,
+    compact_workers: Option<NonZeroUsize>,
+) -> anyhow::Result<SearchnosDB> {
+    open_db_with_options(
+        db_path,
+        SearchnosDBOptions {
+            compact_workers,
+            ..SearchnosDBOptions::default()
+        },
+    )
 }
 
 pub fn open_db_with_hot_max_bytes(

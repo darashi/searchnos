@@ -1,12 +1,11 @@
 use indicatif::ProgressBar;
-use searchnos::db_adapter::open_db;
 use searchnos_db::ReindexProgressPhase;
 
 use crate::{default_progress_style, CommonArgs};
 
 /// Rebuild partition search and visibility sidecars.
 pub async fn run(common: CommonArgs, force: bool) -> anyhow::Result<()> {
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
     let pb = ProgressBar::new(0);
     pb.set_style(default_progress_style());
 

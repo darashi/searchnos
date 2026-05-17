@@ -1,9 +1,8 @@
 use crate::CommonArgs;
-use searchnos::db_adapter::open_db;
 use std::io::Write;
 
 pub async fn run(common: CommonArgs) -> anyhow::Result<()> {
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
     let mut write_error = None;

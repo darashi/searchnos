@@ -66,6 +66,7 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days. Negentropy uses the same kind set as `FETCH_KINDS`.
 - `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
+- `SEARCHNOS_COMPACT_WORKERS` (optional): number of worker threads used by automatic compaction. When unset, compaction uses the available CPU parallelism, capped by the number of output partitions.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
 
 ## Static build

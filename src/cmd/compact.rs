@@ -1,12 +1,11 @@
 use indicatif::HumanBytes;
 
 use crate::CommonArgs;
-use searchnos::db_adapter::open_db;
 use searchnos_db::SearchnosDB;
 
 /// Compact the current hot event file into per-day partitions.
 pub async fn run(common: CommonArgs) -> anyhow::Result<()> {
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
     compact_and_print(&db)?;
 
     Ok(())

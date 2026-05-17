@@ -1,9 +1,8 @@
 use crate::CommonArgs;
-use searchnos::db_adapter::open_db;
 use searchnos_db::DatabaseStats;
 
 pub async fn run(common: CommonArgs) -> anyhow::Result<()> {
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
     let stats = db
         .database_stats()
         .map_err(|err| anyhow::anyhow!("failed to collect database stats: {err}"))?;

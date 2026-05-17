@@ -12,7 +12,7 @@ use nostr_sdk::{prelude::RelayInformationDocument, Event, JsonUtil, Kind};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
-use searchnos::db_adapter::{insert_event_json, open_db};
+use searchnos::db_adapter::{insert_event_json, open_db_with_compact_workers};
 use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::relay_sender::RelaySender;
@@ -22,6 +22,7 @@ use searchnos::search::handlers::{
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -328,6 +329,15 @@ pub struct CommonArgs {
     /// Path to searchnos-db storage directory
     #[arg(long, env = "SEARCHNOS_DB_PATH", default_value = "data")]
     db_path: String,
+    /// Number of worker threads used by automatic compaction
+    #[arg(long, env = "SEARCHNOS_COMPACT_WORKERS")]
+    compact_workers: Option<NonZeroUsize>,
+}
+
+impl CommonArgs {
+    pub fn open_db(&self) -> anyhow::Result<searchnos_db::SearchnosDB> {
+        open_db_with_compact_workers(&self.db_path, self.compact_workers)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -467,7 +477,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         "opening searchnos-db"
     );
 
-    let db = Arc::new(open_db(&common.db_path)?);
+    let db = Arc::new(common.open_db()?);
 
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some(args.relay_name.clone());
@@ -592,7 +602,7 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
         None
     };
 
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
 
     let file = File::open(&args.import_path)
         .with_context(|| format!("failed to open {}", args.import_path))?;
@@ -722,6 +732,7 @@ mod tests {
             .to_string();
         let common = CommonArgs {
             db_path: db_path.clone(),
+            compact_workers: None,
         };
         let args = ServeArgs {
             port,
@@ -785,6 +796,7 @@ mod tests {
             .to_string();
         let common = CommonArgs {
             db_path: db_path.clone(),
+            compact_workers: None,
         };
         let args = ServeArgs {
             port,
@@ -863,6 +875,7 @@ mod tests {
         let summary = import_blocking(
             CommonArgs {
                 db_path: db_path.clone(),
+                compact_workers: None,
             },
             ImportArgs {
                 import_path: import_path.display().to_string(),

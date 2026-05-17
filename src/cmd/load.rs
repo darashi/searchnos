@@ -6,7 +6,6 @@ use anyhow::{ensure, Context};
 use indicatif::{HumanBytes, ProgressBar};
 
 use crate::{byte_progress_style, cmd::compact::compact_and_print, CommonArgs};
-use searchnos::db_adapter::open_db;
 
 /// Load stored ndb notes from length-prefixed binary streams.
 pub async fn run(common: CommonArgs, input_paths: Vec<PathBuf>) -> anyhow::Result<()> {
@@ -26,7 +25,7 @@ pub async fn run(common: CommonArgs, input_paths: Vec<PathBuf>) -> anyhow::Resul
         .collect::<anyhow::Result<Vec<_>>>()?;
     let total_bytes = inputs.iter().map(|(_, bytes)| *bytes).sum();
 
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
 
     let pb = ProgressBar::new(total_bytes);
     pb.set_style(byte_progress_style());

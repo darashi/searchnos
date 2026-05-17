@@ -5,11 +5,10 @@ use std::path::PathBuf;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
 
 use crate::CommonArgs;
-use searchnos::db_adapter::open_db;
 
 /// Dump stored ndb notes to a length-prefixed binary stream.
 pub async fn run(common: CommonArgs, output_path: PathBuf) -> anyhow::Result<()> {
-    let db = open_db(&common.db_path)?;
+    let db = common.open_db()?;
     let file = File::create(&output_path)?;
     let mut writer = BufWriter::new(file);
 
