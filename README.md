@@ -55,6 +55,14 @@ Search:
     < ["EOSE","SEARCH_TEST"]
     >
 
+Health check:
+
+    curl --fail http://localhost:3000/healthz
+
+This endpoint checks the age of the newest event stored in the database and
+returns `503 Service Unavailable` when no events are stored or the newest event
+is older than `HEALTH_MAX_EVENT_AGE_SECONDS` (default: `300`).
+
 ## Configuration
 
 See `compose.yaml` and `.env.example` for the configuration.
@@ -67,6 +75,7 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_COMPACT_WORKERS` (optional): number of worker threads used by automatic compaction. When unset, compaction uses the available CPU parallelism, capped by the number of output partitions.
+- `HEALTH_MAX_EVENT_AGE_SECONDS` (optional): maximum allowed age in seconds for the newest stored event before `/healthz` returns `503 Service Unavailable` (default: `300`).
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
 
 ## Static build

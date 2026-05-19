@@ -4,11 +4,13 @@ use anyhow::anyhow;
 use nostr_sdk::{Client, Filter, Keys, Kind, RelayPoolNotification, RelayUrl};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
 
 use crate::app_state::AppState;
 use crate::index::handlers::handle_update;
 
 const LOG_TARGET: &str = "fetcher";
+const RESTART_DELAY: Duration = Duration::from_secs(5);
 
 pub fn spawn_fetcher(
     state: Arc<AppState>,
@@ -20,8 +22,28 @@ pub fn spawn_fetcher(
     }
 
     Some(tokio::spawn(async move {
-        if let Err(err) = run_fetcher(state, relays, kinds).await {
-            tracing::error!(target: LOG_TARGET, error = %err, "terminated unexpectedly");
+        loop {
+            let result = run_fetcher(state.clone(), relays.clone(), kinds.clone()).await;
+
+            match result {
+                Ok(()) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        restart_delay_seconds = RESTART_DELAY.as_secs(),
+                        "stopped; restarting"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        error = %err,
+                        restart_delay_seconds = RESTART_DELAY.as_secs(),
+                        "terminated unexpectedly; restarting"
+                    );
+                }
+            }
+
+            sleep(RESTART_DELAY).await;
         }
     }))
 }

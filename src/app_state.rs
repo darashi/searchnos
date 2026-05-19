@@ -12,4 +12,5 @@ pub struct AppState {
     pub ping_interval: Duration,
     pub respect_forwarded_headers: bool,
     pub active_connections: AtomicUsize,
+    pub health_max_event_age: Duration,
 }

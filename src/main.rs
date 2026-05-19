@@ -19,13 +19,14 @@ use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
     handle_close, handle_req, ClientMessageError, SubscriptionManager,
 };
+use searchnos_db::SearchnosDB;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tracing::{Instrument, Span};
@@ -223,10 +224,75 @@ async fn websocket(
     .await;
 }
 
-async fn ping() -> impl IntoResponse {
-    tracing::debug!("PING");
+fn health_check_response(
+    latest_event_created_at: Option<u64>,
+    now: u64,
+    max_event_age: Duration,
+) -> (StatusCode, String) {
+    let Some(latest_event_created_at) = latest_event_created_at else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no events found".to_string(),
+        );
+    };
 
-    StatusCode::OK
+    let age_seconds = now.saturating_sub(latest_event_created_at);
+    if age_seconds > max_event_age.as_secs() {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "latest event is stale: latest_event_age_seconds={age_seconds} max_age_seconds={}",
+                max_event_age.as_secs()
+            ),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            format!("OK latest_event_age_seconds={age_seconds}"),
+        )
+    }
+}
+
+async fn health_check(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
+    tracing::debug!("health check");
+
+    let now = current_unix_timestamp();
+    match latest_event_created_at(&state.db, now) {
+        Ok(latest_event_created_at) => {
+            health_check_response(latest_event_created_at, now, state.health_max_event_age)
+        }
+        Err(err) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("health check failed: {err}"),
+        ),
+    }
+}
+
+fn latest_event_created_at(db: &SearchnosDB, now: u64) -> anyhow::Result<Option<u64>> {
+    let filters_json = format!(r#"[{{"limit":1,"until":{now}}}]"#);
+    let Some(event_json) = db
+        .query(&filters_json)
+        .map_err(|err| anyhow::anyhow!("failed to query latest event: {err}"))?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+
+    let created_at = serde_json::from_str::<serde_json::Value>(&event_json)
+        .map_err(|err| anyhow::anyhow!("failed to parse latest event JSON: {err}"))?
+        .get("created_at")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("latest event JSON is missing created_at"))?;
+
+    Ok(Some(created_at))
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 struct ReturnRelayInfoExtractor {}
@@ -418,6 +484,14 @@ struct ServeArgs {
     #[arg(long, env, default_value_t = 55)]
     ping_interval: u64,
 
+    /// Maximum allowed age in seconds for the newest stored event
+    #[arg(
+        long = "health-max-event-age-seconds",
+        env = "HEALTH_MAX_EVENT_AGE_SECONDS",
+        default_value_t = 300
+    )]
+    health_max_event_age_seconds: u64,
+
     /// Use Forwarded header when logging client addresses
     #[arg(long = "respect-forwarded", env = "SEARCHNOS_RESPECT_FORWARDED")]
     respect_forwarded_headers: bool,
@@ -495,6 +569,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
+        health_max_event_age: Duration::from_secs(args.health_max_event_age_seconds),
     });
 
     if !src_relays.is_empty() {
@@ -521,7 +596,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
     );
 
     let app = Router::new()
-        .route("/ping", get(ping))
+        .route("/healthz", get(health_check))
         .route("/", get(websocket_handler))
         .layer(Extension(app_state));
 
@@ -704,7 +779,8 @@ fn count_non_empty_lines(path: &str) -> Result<usize, anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
 
     use super::*;
 
@@ -712,6 +788,92 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         Ok(port)
+    }
+
+    fn default_serve_args(port: u16) -> ServeArgs {
+        ServeArgs {
+            port,
+            src_relays: Vec::new(),
+            fetch_kinds: Vec::new(),
+            negentropy_relays: Vec::new(),
+            negentropy_days: 2,
+            max_subscriptions: 100,
+            max_filters: 32,
+            ping_interval: 55,
+            health_max_event_age_seconds: 300,
+            respect_forwarded_headers: false,
+            relay_name: "searchnos".to_string(),
+            relay_description: "searchnos relay".to_string(),
+        }
+    }
+
+    fn read_http_response(port: u16, path: &str) -> std::io::Result<String> {
+        let mut stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => return Err(err),
+            }
+        };
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        Ok(response)
+    }
+
+    #[test]
+    fn health_check_reports_latest_event_age() {
+        assert_eq!(
+            health_check_response(None, 100, Duration::from_secs(60)),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no events found".to_string()
+            )
+        );
+        assert_eq!(
+            health_check_response(Some(40), 100, Duration::from_secs(60)),
+            (StatusCode::OK, "OK latest_event_age_seconds=60".to_string())
+        );
+        assert_eq!(
+            health_check_response(Some(39), 100, Duration::from_secs(60)),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "latest event is stale: latest_event_age_seconds=61 max_age_seconds=60".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn latest_event_created_at_ignores_future_events() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "searchnos-health-future-test-{}",
+            rand::random::<u64>()
+        ));
+        let db_path = temp_dir.display().to_string();
+        let db = searchnos::db_adapter::open_db(&db_path).unwrap();
+        let keys = nostr_sdk::Keys::generate();
+        let current_event = nostr_sdk::EventBuilder::text_note("current")
+            .custom_created_at(nostr_sdk::Timestamp::from_secs(100))
+            .sign_with_keys(&keys)
+            .unwrap();
+        let future_event = nostr_sdk::EventBuilder::text_note("future")
+            .custom_created_at(nostr_sdk::Timestamp::from_secs(101))
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        insert_event_json(&db, &current_event.as_json()).unwrap();
+        insert_event_json(&db, &future_event.as_json()).unwrap();
+
+        assert_eq!(latest_event_created_at(&db, 100).unwrap(), Some(100));
+
+        drop(db);
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[tokio::test]
@@ -734,19 +896,7 @@ mod tests {
             db_path: db_path.clone(),
             compact_workers: None,
         };
-        let args = ServeArgs {
-            port,
-            src_relays: Vec::new(),
-            fetch_kinds: Vec::new(),
-            negentropy_relays: Vec::new(),
-            negentropy_days: 2,
-            max_subscriptions: 100,
-            max_filters: 32,
-            ping_interval: 55,
-            respect_forwarded_headers: false,
-            relay_name: "searchnos".to_string(),
-            relay_description: "searchnos relay".to_string(),
-        };
+        let args = default_serve_args(port);
         let app = app(&common, &args).await.unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
@@ -779,6 +929,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn health_check_endpoint_returns_ok() {
+        init_tracing();
+
+        let port = match find_available_port() {
+            Ok(port) => port,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                println!("skipping health_check_endpoint_returns_ok: {err}");
+                return;
+            }
+            Err(err) => panic!("failed to find available port: {err}"),
+        };
+        let db_path = std::env::temp_dir()
+            .join(format!("searchnos-db-health-test-{}", port))
+            .display()
+            .to_string();
+        let common = CommonArgs {
+            db_path: db_path.clone(),
+            compact_workers: None,
+        };
+        let keys = nostr_sdk::Keys::generate();
+        let event = nostr_sdk::EventBuilder::text_note("fresh event")
+            .custom_created_at(nostr_sdk::Timestamp::from_secs(current_unix_timestamp()))
+            .sign_with_keys(&keys)
+            .unwrap();
+        {
+            let db = common.open_db().unwrap();
+            insert_event_json(&db, &event.as_json()).unwrap();
+        }
+        let args = default_serve_args(port);
+        let app = app(&common, &args).await.unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+
+        let join_handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let response = tokio::task::spawn_blocking(move || read_http_response(port, "/healthz"))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("OK latest_event_age_seconds="));
+
+        join_handle.abort();
+    }
+
+    #[tokio::test]
     async fn event_messages_are_rejected() {
         init_tracing();
 
@@ -798,19 +1002,7 @@ mod tests {
             db_path: db_path.clone(),
             compact_workers: None,
         };
-        let args = ServeArgs {
-            port,
-            src_relays: Vec::new(),
-            fetch_kinds: Vec::new(),
-            negentropy_relays: Vec::new(),
-            negentropy_days: 2,
-            max_subscriptions: 100,
-            max_filters: 32,
-            ping_interval: 55,
-            respect_forwarded_headers: false,
-            relay_name: "searchnos".to_string(),
-            relay_description: "searchnos relay".to_string(),
-        };
+        let args = default_serve_args(port);
         let app = app(&common, &args).await.unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
@@ -851,7 +1043,6 @@ mod tests {
     #[tokio::test]
     async fn import_respects_fetch_kinds() {
         use std::fs::{self, File};
-        use std::io::Write;
 
         let temp_dir =
             std::env::temp_dir().join(format!("searchnos-import-test-{}", rand::random::<u64>()));
