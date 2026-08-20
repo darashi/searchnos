@@ -11,6 +11,7 @@ services:
       - FETCH_KINDS=${FETCH_KINDS}
       - NEGENTROPY_RELAYS=${NEGENTROPY_RELAYS}
       - NEGENTROPY_DAYS=${NEGENTROPY_DAYS}
+      - SEARCH_DAYS
       - SEARCHNOS_DB_PATH=/data
     restart: always
     ports:

@@ -23,7 +23,7 @@ use searchnos_db::SearchnosDB;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -480,6 +480,10 @@ struct ServeArgs {
     #[arg(long, env, default_value_t = 8)]
     max_filters: usize,
 
+    /// Maximum number of recent UTC day partitions searched
+    #[arg(long = "search-days", env = "SEARCH_DAYS")]
+    search_days: Option<NonZeroU64>,
+
     /// Ping interval in seconds
     #[arg(long, env, default_value_t = 55)]
     ping_interval: u64,
@@ -566,11 +570,19 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         relay_info,
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
+        search_days: args.search_days,
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
         health_max_event_age: Duration::from_secs(args.health_max_event_age_seconds),
     });
+
+    if let Some(search_days) = args.search_days {
+        tracing::info!(
+            days = search_days.get(),
+            "configured search partition limit"
+        );
+    }
 
     if !src_relays.is_empty() {
         let relay_list: Vec<String> = src_relays.iter().map(|url| url.to_string()).collect();
@@ -799,6 +811,7 @@ mod tests {
             negentropy_days: 2,
             max_subscriptions: 100,
             max_filters: 32,
+            search_days: None,
             ping_interval: 55,
             health_max_event_age_seconds: 300,
             respect_forwarded_headers: false,

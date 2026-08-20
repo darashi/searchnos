@@ -2,16 +2,18 @@ use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
 use nostr_sdk::prelude::SubscriptionId;
-use nostr_sdk::Filter;
+use nostr_sdk::{Filter, Timestamp};
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 const DEFAULT_SEARCH_LIMIT: usize = 100;
 const MAX_SEARCH_LIMIT: usize = 1000;
+const SECONDS_PER_DAY: u64 = 86_400;
 
 pub struct SubscriptionHandle {
     cancel: watch::Sender<bool>,
@@ -277,7 +279,20 @@ fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_search_filters(filters: Vec<Filter>) -> Vec<Filter> {
+fn oldest_search_partition_start(now: u64, search_days: NonZeroU64) -> u64 {
+    let current_day = now / SECONDS_PER_DAY;
+    current_day
+        .saturating_sub(search_days.get() - 1)
+        .saturating_mul(SECONDS_PER_DAY)
+}
+
+fn normalize_search_filters(
+    filters: Vec<Filter>,
+    search_days: Option<NonZeroU64>,
+    now: u64,
+) -> Vec<Filter> {
+    let minimum_since = search_days.map(|days| oldest_search_partition_start(now, days));
+
     filters
         .into_iter()
         .map(|mut filter| {
@@ -287,9 +302,22 @@ fn normalize_search_filters(filters: Vec<Filter>) -> Vec<Filter> {
                     .map_or(DEFAULT_SEARCH_LIMIT, |limit| limit)
                     .min(MAX_SEARCH_LIMIT),
             );
+            if let Some(minimum_since) = minimum_since {
+                let effective_since = filter
+                    .since
+                    .map_or(minimum_since, |since| since.as_secs().max(minimum_since));
+                filter.since = Some(Timestamp::from_secs(effective_since));
+            }
             filter
         })
         .collect()
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub async fn handle_req(
@@ -327,7 +355,8 @@ pub async fn handle_req(
             return Err(ClientMessageError::closed(subscription_id.clone(), message));
         }
 
-        let filters = normalize_search_filters(filters);
+        let filters =
+            normalize_search_filters(filters, state.search_days, current_unix_timestamp());
 
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = spawn_subscription_task(
@@ -397,5 +426,36 @@ mod tests {
         let err = validate_search_filters(&filters).unwrap_err();
 
         assert_eq!(err, "error: search filter is required");
+    }
+
+    #[test]
+    fn normalize_search_filters_limits_search_to_recent_utc_days() {
+        let now = 1_000 * SECONDS_PER_DAY + 12_345;
+        let search_days = NonZeroU64::new(365);
+        let cutoff = (1_000 - 364) * SECONDS_PER_DAY;
+        let filters = vec![
+            Filter::new().search("unset"),
+            Filter::new()
+                .search("older")
+                .since(Timestamp::from_secs(cutoff - 1)),
+            Filter::new()
+                .search("newer")
+                .since(Timestamp::from_secs(cutoff + 1)),
+        ];
+
+        let normalized = normalize_search_filters(filters, search_days, now);
+
+        assert_eq!(normalized[0].since, Some(Timestamp::from_secs(cutoff)));
+        assert_eq!(normalized[1].since, Some(Timestamp::from_secs(cutoff)));
+        assert_eq!(normalized[2].since, Some(Timestamp::from_secs(cutoff + 1)));
+    }
+
+    #[test]
+    fn normalize_search_filters_does_not_add_since_without_search_days() {
+        let filters = vec![Filter::new().search("nostr")];
+
+        let normalized = normalize_search_filters(filters, None, 0);
+
+        assert_eq!(normalized[0].since, None);
     }
 }

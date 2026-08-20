@@ -73,6 +73,7 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `FETCH_KINDS` (optional): comma-separated list of numeric event kinds to fetch or reconcile with negentropy. When unset but `SRC_RELAYS` or `NEGENTROPY_RELAYS` is provided, a default set matching the NIP-50 indexer is used (`0,1,5,30023,40,41,42,43,44`).
 - `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days. Negentropy uses the same kind set as `FETCH_KINDS`.
 - `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
+- `SEARCH_DAYS` (optional): maximum number of recent UTC day partitions searched. For example, `365` searches the current UTC day and the preceding 364 days. A client-provided `since` is preserved when it selects a shorter period.
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_COMPACT_WORKERS` (optional): number of worker threads used by automatic compaction. When unset, compaction uses the available CPU parallelism, capped by the number of output partitions.
 - `HEALTH_MAX_EVENT_AGE_SECONDS` (optional): maximum allowed age in seconds for the newest stored event before `/healthz` returns `503 Service Unavailable` (default: `300`).

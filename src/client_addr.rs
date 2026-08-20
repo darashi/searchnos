@@ -24,13 +24,9 @@ impl ClientAddr {
     }
 
     pub fn from_headers(socket_addr: SocketAddr, forwarded_header: Option<&str>) -> Self {
-        let forwarded_raw = forwarded_header.map(str::to_owned).and_then(|value| {
-            if value.trim().is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        });
+        let forwarded_raw = forwarded_header
+            .map(str::to_owned)
+            .filter(|value| !value.trim().is_empty());
         Self::new(socket_addr, forwarded_raw)
     }
 }
