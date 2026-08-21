@@ -12,6 +12,7 @@ services:
       - NEGENTROPY_RELAYS=${NEGENTROPY_RELAYS}
       - NEGENTROPY_DAYS=${NEGENTROPY_DAYS}
       - SEARCH_DAYS
+      - MAX_SEARCH_THREADS
       - SEARCHNOS_DB_PATH=/data
     restart: always
     ports:

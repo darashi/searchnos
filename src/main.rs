@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, net::SocketAddr, sync::Arc};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, Span};
 use yawc::{
@@ -484,6 +485,10 @@ struct ServeArgs {
     #[arg(long = "search-days", env = "SEARCH_DAYS")]
     search_days: Option<NonZeroU64>,
 
+    /// Maximum number of concurrent initial search threads across all clients
+    #[arg(long, env, default_value_t = NonZeroUsize::new(8).unwrap())]
+    max_search_threads: NonZeroUsize,
+
     /// Ping interval in seconds
     #[arg(long, env, default_value_t = 55)]
     ping_interval: u64,
@@ -571,6 +576,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
         search_days: args.search_days,
+        search_permits: Arc::new(Semaphore::new(args.max_search_threads.get())),
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
@@ -583,6 +589,11 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
             "configured search partition limit"
         );
     }
+
+    tracing::info!(
+        threads = args.max_search_threads.get(),
+        "configured global search thread limit"
+    );
 
     if !src_relays.is_empty() {
         let relay_list: Vec<String> = src_relays.iter().map(|url| url.to_string()).collect();
@@ -812,12 +823,30 @@ mod tests {
             max_subscriptions: 100,
             max_filters: 32,
             search_days: None,
+            max_search_threads: NonZeroUsize::new(8).unwrap(),
             ping_interval: 55,
             health_max_event_age_seconds: 300,
             respect_forwarded_headers: false,
             relay_name: "searchnos".to_string(),
             relay_description: "searchnos relay".to_string(),
         }
+    }
+
+    #[test]
+    fn serve_defaults_max_search_threads() {
+        let cli = Cli::try_parse_from(["searchnos", "serve"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve command");
+        };
+
+        assert_eq!(args.max_search_threads.get(), 8);
+    }
+
+    #[test]
+    fn serve_rejects_zero_max_search_threads() {
+        let result = Cli::try_parse_from(["searchnos", "serve", "--max-search-threads", "0"]);
+
+        assert!(result.is_err());
     }
 
     fn read_http_response(port: u16, path: &str) -> std::io::Result<String> {

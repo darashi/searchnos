@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use searchnos_db::SearchnosDB;
+use tokio::sync::Semaphore;
 
 pub struct AppState {
     pub db: Arc<SearchnosDB>,
@@ -11,6 +12,7 @@ pub struct AppState {
     pub max_subscriptions: usize,
     pub max_filters: usize,
     pub search_days: Option<NonZeroU64>,
+    pub search_permits: Arc<Semaphore>,
     pub ping_interval: Duration,
     pub respect_forwarded_headers: bool,
     pub active_connections: AtomicUsize,
