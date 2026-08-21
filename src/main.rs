@@ -12,7 +12,9 @@ use nostr_sdk::{prelude::RelayInformationDocument, Event, JsonUtil, Kind};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
-use searchnos::db_adapter::{insert_event_json, open_db_with_compact_workers};
+use searchnos::db_adapter::{
+    insert_event_json, open_db_with_compact_workers, open_db_with_snapshot_workers,
+};
 use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::relay_sender::RelaySender;
@@ -28,7 +30,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, net::SocketAddr, sync::Arc};
-use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, Span};
 use yawc::{
@@ -485,7 +486,7 @@ struct ServeArgs {
     #[arg(long = "search-days", env = "SEARCH_DAYS")]
     search_days: Option<NonZeroU64>,
 
-    /// Maximum number of concurrent initial search threads across all clients
+    /// Number of concurrent initial search worker threads across all clients
     #[arg(long, env, default_value_t = NonZeroUsize::new(8).unwrap())]
     max_search_threads: NonZeroUsize,
 
@@ -560,7 +561,11 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         "opening searchnos-db"
     );
 
-    let db = Arc::new(common.open_db()?);
+    let db = Arc::new(open_db_with_snapshot_workers(
+        &common.db_path,
+        common.compact_workers,
+        args.max_search_threads,
+    )?);
 
     let mut relay_info = RelayInformationDocument::new();
     relay_info.name = Some(args.relay_name.clone());
@@ -576,7 +581,6 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
         search_days: args.search_days,
-        search_permits: Arc::new(Semaphore::new(args.max_search_threads.get())),
         ping_interval: Duration::from_secs(args.ping_interval),
         respect_forwarded_headers: args.respect_forwarded_headers,
         active_connections: AtomicUsize::new(0),
@@ -592,7 +596,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 
     tracing::info!(
         threads = args.max_search_threads.get(),
-        "configured global search thread limit"
+        "configured subscription snapshot workers"
     );
 
     if !src_relays.is_empty() {

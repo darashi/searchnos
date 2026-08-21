@@ -1,14 +1,13 @@
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
-use futures::{Stream, StreamExt};
 use nostr_sdk::prelude::SubscriptionId;
 use nostr_sdk::{Filter, Timestamp};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -109,17 +108,6 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn acquire_search_permit(
-    search_permits: Arc<Semaphore>,
-    cancel_rx: &mut watch::Receiver<bool>,
-) -> Option<OwnedSemaphorePermit> {
-    tokio::select! {
-        biased;
-        _ = wait_for_cancel(cancel_rx) => None,
-        permit = search_permits.acquire_owned() => permit.ok(),
-    }
-}
-
 async fn wait_for_start(
     start_rx: &mut oneshot::Receiver<()>,
     cancel_rx: &mut watch::Receiver<bool>,
@@ -128,19 +116,6 @@ async fn wait_for_start(
         biased;
         _ = wait_for_cancel(cancel_rx) => false,
         result = start_rx => result.is_ok(),
-    }
-}
-
-async fn drain_initial_search<S>(mut subscription: S, search_permit: OwnedSemaphorePermit)
-where
-    S: Stream<Item = searchnos_db::StreamItem> + Unpin,
-{
-    let _search_permit = search_permit;
-
-    while let Some(item) = subscription.next().await {
-        if matches!(item, searchnos_db::StreamItem::Eose) {
-            break;
-        }
     }
 }
 
@@ -156,15 +131,9 @@ fn spawn_subscription_task(
         if !wait_for_start(&mut start_rx, &mut cancel_rx).await {
             return;
         }
-        let search_permit =
-            match acquire_search_permit(state.search_permits.clone(), &mut cancel_rx).await {
-                Some(search_permit) => search_permit,
-                None => return,
-            };
         if *cancel_rx.borrow() {
             return;
         }
-        let mut search_permit = Some(search_permit);
         let started_at = Instant::now();
         let filters_json = serde_json::to_string(&filters).unwrap_or_else(|_| "[]".to_string());
         let mut subscription = match state.db.clone().subscribe(&filters_json) {
@@ -199,15 +168,11 @@ fn spawn_subscription_task(
                                     subscription = %subscription_id,
                                     "failed to deliver subscription event"
                                 );
-                                if let Some(search_permit) = search_permit.take() {
-                                    tokio::spawn(drain_initial_search(subscription, search_permit));
-                                }
                                 return;
                             }
                         }
                         Some(searchnos_db::StreamItem::Eose) => {
                             snapshot_complete = true;
-                            drop(search_permit.take());
                             let elapsed_ms = duration_to_ms(started_at.elapsed());
                             tracing::info!(
                                 filters = %filters_json,
@@ -239,9 +204,6 @@ fn spawn_subscription_task(
                     }
                 }
                 _ = wait_for_cancel(&mut cancel_rx) => {
-                    if let Some(search_permit) = search_permit.take() {
-                        tokio::spawn(drain_initial_search(subscription, search_permit));
-                    }
                     return;
                 }
             }
@@ -460,7 +422,6 @@ pub async fn handle_close(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{channel::mpsc, SinkExt};
 
     #[test]
     fn validate_search_filters_accepts_non_empty_search() {
@@ -524,41 +485,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_search_permit_waits_for_an_available_slot() {
-        let search_permits = Arc::new(Semaphore::new(1));
-        let first_permit = search_permits.clone().try_acquire_owned().unwrap();
-        let (_cancel_tx, mut cancel_rx) = watch::channel(false);
-        let waiting_permits = search_permits.clone();
-        let task =
-            tokio::spawn(
-                async move { acquire_search_permit(waiting_permits, &mut cancel_rx).await },
-            );
-
-        assert!(!task.is_finished());
-
-        drop(first_permit);
-        assert!(task.await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn acquire_search_permit_stops_waiting_when_cancelled() {
-        let search_permits = Arc::new(Semaphore::new(1));
-        let first_permit = search_permits.clone().try_acquire_owned().unwrap();
-        let (cancel_tx, mut cancel_rx) = watch::channel(false);
-        let waiting_permits = search_permits.clone();
-        let task =
-            tokio::spawn(
-                async move { acquire_search_permit(waiting_permits, &mut cancel_rx).await },
-            );
-
-        cancel_tx.send(true).unwrap();
-
-        assert!(task.await.unwrap().is_none());
-        assert!(search_permits.clone().try_acquire_owned().is_err());
-        drop(first_permit);
-    }
-
-    #[tokio::test]
     async fn wait_for_start_stops_waiting_when_cancelled() {
         let (_start_tx, mut start_rx) = oneshot::channel();
         let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -567,26 +493,5 @@ mod tests {
         cancel_tx.send(true).unwrap();
 
         assert!(!task.await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn drain_initial_search_holds_permit_until_eose() {
-        let (mut sender, receiver) = mpsc::channel(1);
-        let search_permits = Arc::new(Semaphore::new(1));
-        let search_permit = search_permits.clone().try_acquire_owned().unwrap();
-        let task = tokio::spawn(drain_initial_search(receiver, search_permit));
-
-        assert!(search_permits.clone().try_acquire_owned().is_err());
-
-        sender
-            .send(searchnos_db::StreamItem::Event("event".to_string()))
-            .await
-            .unwrap();
-        assert!(search_permits.clone().try_acquire_owned().is_err());
-
-        sender.send(searchnos_db::StreamItem::Eose).await.unwrap();
-        task.await.unwrap();
-
-        assert!(search_permits.try_acquire_owned().is_ok());
     }
 }

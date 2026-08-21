@@ -21,6 +21,21 @@ pub fn open_db_with_compact_workers(
     )
 }
 
+pub fn open_db_with_snapshot_workers(
+    db_path: &str,
+    compact_workers: Option<NonZeroUsize>,
+    snapshot_workers: NonZeroUsize,
+) -> anyhow::Result<SearchnosDB> {
+    open_db_with_options(
+        db_path,
+        SearchnosDBOptions {
+            compact_workers,
+            snapshot_workers,
+            ..SearchnosDBOptions::default()
+        },
+    )
+}
+
 pub fn open_db_with_hot_max_bytes(
     db_path: &str,
     hot_max_bytes: u64,

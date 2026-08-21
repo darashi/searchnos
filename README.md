@@ -74,7 +74,7 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days. Negentropy uses the same kind set as `FETCH_KINDS`.
 - `NEGENTROPY_DAYS` (optional): number of recent UTC days reconciled on `SIGUSR2` (default: `2`).
 - `SEARCH_DAYS` (optional): maximum number of recent UTC day partitions searched. For example, `365` searches the current UTC day and the preceding 364 days. A client-provided `since` is preserved when it selects a shorter period.
-- `MAX_SEARCH_THREADS` (optional): maximum number of initial searches run concurrently across all clients (default: `8`). Requests above the limit wait for a slot; live subscriptions after `EOSE` do not use a slot.
+- `MAX_SEARCH_THREADS` (optional): number of initial-search database workers shared across all clients (default: `8`). An idle worker starts a search immediately. When every worker is busy, waiting searches are grouped into balanced batches as workers become available; live subscriptions after `EOSE` do not occupy a worker.
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_COMPACT_WORKERS` (optional): number of worker threads used by automatic compaction. When unset, compaction uses the available CPU parallelism, capped by the number of output partitions.
 - `HEALTH_MAX_EVENT_AGE_SECONDS` (optional): maximum allowed age in seconds for the newest stored event before `/healthz` returns `503 Service Unavailable` (default: `300`).
