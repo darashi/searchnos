@@ -1628,7 +1628,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db#04124afb7224f05f2cae7c5e9061b37254eceb3e"
+source = "git+https://github.com/darashi/searchnos-db#0a2289861159e9d7b59f32a2941c1a69dc3a1c4d"
 dependencies = [
  "aho-corasick",
  "clap",
