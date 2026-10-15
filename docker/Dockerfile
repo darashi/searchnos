@@ -26,5 +26,5 @@ COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/src/app/target/x86_64-unknown-linux-musl/release/searchnos /app/searchnos
 
 WORKDIR /app
-
+USER 10001
 CMD ["/app/searchnos", "serve"]
