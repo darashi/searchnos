@@ -118,7 +118,7 @@ async fn run_fetcher(
                     continue;
                 }
 
-                tracing::info!(
+                tracing::debug!(
                     target: LOG_TARGET,
                     relay = %relay_url,
                     id = %event.id,

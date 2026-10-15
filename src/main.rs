@@ -51,9 +51,9 @@ async fn process_message(
             let payload = msg.into_payload();
             let text =
                 std::str::from_utf8(&payload).context("received text frame with invalid UTF-8")?;
-            tracing::info!("RECEIVED {}", text);
-            let client_message = nostr_sdk::ClientMessage::from_json(payload.as_ref())
-                .map_err(anyhow::Error::from)?;
+            tracing::debug!(message_bytes = payload.len(), "received text message");
+            let client_message =
+                nostr_sdk::ClientMessage::from_json(text).map_err(anyhow::Error::from)?;
             match client_message {
                 nostr_sdk::ClientMessage::Req {
                     subscription_id,
@@ -77,7 +77,7 @@ async fn process_message(
                     Ok(())
                 }
                 nostr_sdk::ClientMessage::Event(event) => {
-                    tracing::info!(
+                    tracing::debug!(
                         id = %event.id,
                         kind = event.kind.as_u16(),
                         pubkey = %event.pubkey,
@@ -88,11 +88,11 @@ async fn process_message(
                     sender.ok(&event, false, "blocked: writes disabled").await?;
                     Ok(())
                 }
-                other => Err(anyhow!("invalid message type: {:?}", other).into()),
+                _ => Err(anyhow!("unsupported client message type").into()),
             }?
         }
         OpCode::Close => {
-            tracing::info!("close message received");
+            tracing::debug!("close message received");
             return Ok(());
         }
         OpCode::Pong => {}
@@ -124,7 +124,7 @@ async fn spawn_pinger(state: Arc<AppState>, sender: RelaySender, span: Span) -> 
         async move {
             loop {
                 tokio::time::sleep(state.ping_interval).await;
-                tracing::info!("sending ping");
+                tracing::debug!("sending ping");
                 let res = sender.frame(Frame::ping(Vec::<u8>::new())).await;
                 if let Err(e) = res {
                     tracing::warn!("error sending ping: {}", e);
@@ -186,12 +186,12 @@ async fn websocket(
             .await;
 
             if let Err(err) = res {
-                tracing::warn!("error processing message: {}", err);
                 match err {
                     ClientMessageError::Closed {
                         subscription_id,
                         message,
                     } => {
+                        tracing::debug!(%subscription_id, %message, "rejected subscription");
                         if let Err(send_err) =
                             send_closed(sender.clone(), subscription_id, &message).await
                         {
@@ -200,6 +200,7 @@ async fn websocket(
                         }
                     }
                     ClientMessageError::Internal(err) => {
+                        tracing::warn!(error = %err, "error processing message");
                         if let Err(send_err) =
                             send_notice(sender.clone(), &format!("Error: {}", err)).await
                         {
@@ -633,7 +634,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 fn init_tracing() {
     let _ = tracing_log::LogTracer::init();
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .without_time()

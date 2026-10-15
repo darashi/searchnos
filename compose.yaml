@@ -6,6 +6,7 @@ services:
       dockerfile: ./docker/Dockerfile
     container_name: searchnos
     environment:
+      - RUST_LOG=${RUST_LOG:-info}
       - PORT=3000
       - SRC_RELAYS=${SRC_RELAYS}
       - FETCH_KINDS=${FETCH_KINDS}
@@ -15,6 +16,11 @@ services:
       - MAX_SEARCH_THREADS
       - SEARCHNOS_DB_PATH=/data
     restart: always
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - 3000:3000
     volumes:

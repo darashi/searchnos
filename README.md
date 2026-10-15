@@ -78,7 +78,14 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `SEARCHNOS_DB_PATH`: directory where searchnos-db keeps its storage files.
 - `SEARCHNOS_COMPACT_WORKERS` (optional): number of worker threads used by automatic compaction. When unset, compaction uses the available CPU parallelism, capped by the number of output partitions.
 - `HEALTH_MAX_EVENT_AGE_SECONDS` (optional): maximum allowed age in seconds for the newest stored event before `/healthz` returns `503 Service Unavailable` (default: `300`).
+- `RUST_LOG` (optional): tracing filter (default: `info`). Per-message diagnostics, rejected subscriptions, and fetched-event logs use `debug`. Received message bodies are not logged.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
+
+## Logging
+
+The default log level is `info`. Use `RUST_LOG=searchnos=debug,searchnos_db=debug` for per-message diagnostics during troubleshooting, then restore `info` for normal operation.
+
+Docker Compose limits container logs to three 10 MB files. For systemd deployments, also configure size-based rotation for any syslog files that receive service output, and run rotation frequently enough for the expected traffic. Journald retention limits do not limit a separate `/var/log/syslog` copy.
 
 ## Static build
 

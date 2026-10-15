@@ -265,7 +265,7 @@ impl ClientMessageError {
 fn log_close(addr: &ClientAddr, subscription_id: &SubscriptionId) {
     let remote_addr = addr.socket_addr();
     if let Some(header) = addr.forwarded_raw() {
-        tracing::info!(
+        tracing::debug!(
             remote_ip = %remote_addr.ip(),
             remote_port = remote_addr.port(),
             forwarded = header,
@@ -273,7 +273,7 @@ fn log_close(addr: &ClientAddr, subscription_id: &SubscriptionId) {
             "CLOSE received"
         );
     } else {
-        tracing::info!(
+        tracing::debug!(
             remote_ip = %remote_addr.ip(),
             remote_port = remote_addr.port(),
             subscription = %subscription_id,
@@ -319,7 +319,7 @@ fn normalize_search_filters(
             filter.limit = Some(
                 filter
                     .limit
-                    .map_or(DEFAULT_SEARCH_LIMIT, |limit| limit)
+                    .unwrap_or(DEFAULT_SEARCH_LIMIT)
                     .min(MAX_SEARCH_LIMIT),
             );
             if let Some(minimum_since) = minimum_since {
