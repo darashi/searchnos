@@ -1,17 +1,17 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use axum::{
-    extract::{connect_info::ConnectInfo, FromRequestParts},
-    http::{request::Parts, StatusCode},
+    Extension, Router,
+    extract::{FromRequestParts, connect_info::ConnectInfo},
+    http::{StatusCode, request::Parts},
     response::IntoResponse,
     routing::get,
-    Extension, Router,
 };
 use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
 use nostr_sdk::prelude::{Event, Kind, RelayInformationDocument};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
-use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
+use searchnos::config::{DEFAULT_FETCH_KINDS, parse_fetch_kinds, parse_src_relays};
 use searchnos::db_adapter::{
     insert_event_json, open_db_with_compact_workers, open_db_with_snapshot_workers,
 };
@@ -19,7 +19,7 @@ use searchnos::index::fetcher::spawn_fetcher;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
-    handle_close, handle_req, ClientMessageError, SubscriptionManager,
+    ClientMessageError, SubscriptionManager, handle_close, handle_req,
 };
 use searchnos_db::SearchnosDB;
 use std::collections::HashSet;
@@ -33,8 +33,8 @@ use std::{env, net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tracing::{Instrument, Span};
 use yawc::{
-    frame::{Frame, OpCode},
     CompressionLevel, HttpWebSocket as YawcWebSocket, IncomingUpgrade, Options,
+    frame::{Frame, OpCode},
 };
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);

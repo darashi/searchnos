@@ -2,7 +2,7 @@ use futures::{sink::SinkExt, stream::SplitSink};
 use nostr_sdk::prelude::{Event, RelayMessage, SubscriptionId};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};
+use yawc::{HttpWebSocket as YawcWebSocket, frame::Frame};
 
 pub type WsSink = SplitSink<YawcWebSocket, Frame>;
 

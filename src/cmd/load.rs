@@ -2,10 +2,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
-use anyhow::{ensure, Context};
+use anyhow::{Context, ensure};
 use indicatif::{HumanBytes, ProgressBar};
 
-use crate::{byte_progress_style, cmd::compact::compact_and_print, CommonArgs};
+use crate::{CommonArgs, byte_progress_style, cmd::compact::compact_and_print};
 
 /// Load stored ndb notes from length-prefixed binary streams.
 pub async fn run(common: CommonArgs, input_paths: Vec<PathBuf>) -> anyhow::Result<()> {

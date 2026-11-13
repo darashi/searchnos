@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ndb::{NdbNote, NdbNoteBuf};
@@ -12,7 +12,7 @@ use searchnos_db::{InsertOptions, SearchnosDB};
 use serde_json::Value;
 use tracing::{info, warn};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message, WebSocket};
+use tungstenite::{Message, WebSocket, connect};
 
 const NEGENTROPY_FRAME_SIZE_LIMIT: u64 = 60_000;
 const FETCH_BATCH_SIZE: usize = 100;

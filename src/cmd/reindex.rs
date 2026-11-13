@@ -1,7 +1,7 @@
 use indicatif::ProgressBar;
 use searchnos_db::ReindexProgressPhase;
 
-use crate::{default_progress_style, CommonArgs};
+use crate::{CommonArgs, default_progress_style};
 
 /// Rebuild partition search and visibility sidecars.
 pub async fn run(common: CommonArgs, force: bool) -> anyhow::Result<()> {

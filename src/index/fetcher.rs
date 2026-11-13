@@ -6,7 +6,7 @@ use nostr_sdk::prelude::{
     Client, ClientNotification, Filter, Keys, Kind, RelayUrl, SignerAuthenticator,
 };
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use crate::app_state::AppState;
 use crate::index::handlers::handle_update;

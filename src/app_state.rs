@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use searchnos_db::SearchnosDB;

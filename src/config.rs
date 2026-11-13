@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use nostr_sdk::prelude::{Kind, RelayUrl};
 use std::str::FromStr;
 

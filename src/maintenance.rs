@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Instant, SystemTime};
 
@@ -17,7 +17,7 @@ pub fn spawn_negentropy_signal_listener(
     kinds: Vec<Kind>,
 ) {
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut signal = match signal(SignalKind::user_defined2()) {
             Ok(signal) => signal,
