@@ -467,6 +467,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2560,13 +2575,14 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "yawc"
-version = "0.3.4"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d8975e321ed88697d7a99acc177682938df38dc02a30e60a31ab0f7765c4da6"
+checksum = "d7b69940f68e6cbe7d7f85350b81e51fafe62786d812b92c263727addc13a272"
 dependencies = [
  "axum-core",
  "base64",
  "bytes",
+ "crossbeam-queue",
  "flate2",
  "futures",
  "getrandom 0.2.17",
@@ -2577,6 +2593,7 @@ dependencies = [
  "js-sys",
  "log",
  "nom",
+ "percent-encoding",
  "pin-project",
  "rand 0.8.8",
  "sha1 0.10.7",
