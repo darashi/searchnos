@@ -68,18 +68,15 @@ async fn run_fetcher(
 
     for relay in &relays {
         let url = relay.to_string();
-        match client.add_relay(url.clone()).await {
-            Err(err) => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    relay = %url,
-                    error = %err,
-                    "failed to add source relay"
-                );
-            }
-            _ => {
-                tracing::info!(target: LOG_TARGET, relay = %url, "relay added");
-            }
+        if let Err(err) = client.add_relay(url.clone()).await {
+            tracing::warn!(
+                target: LOG_TARGET,
+                relay = %url,
+                error = %err,
+                "failed to add source relay"
+            );
+        } else {
+            tracing::info!(target: LOG_TARGET, relay = %url, "relay added");
         }
     }
 
