@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ndb::{NdbNote, NdbNoteBuf};
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
-use nostr_sdk::Kind;
+use nostr_sdk::prelude::Kind;
 use searchnos_db::{InsertOptions, SearchnosDB};
 use serde_json::Value;
 use tracing::{info, warn};

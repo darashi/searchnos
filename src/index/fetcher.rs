@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use nostr_sdk::{Client, Filter, Keys, Kind, RelayPoolNotification, RelayUrl};
-use tokio::sync::broadcast::error::RecvError;
+use futures::StreamExt;
+use nostr_sdk::prelude::{
+    Client, ClientNotification, Filter, Keys, Kind, RelayUrl, SignerAuthenticator,
+};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -57,8 +59,8 @@ async fn run_fetcher(
         return Err(anyhow!("fetcher requires at least one kind"));
     }
 
-    let keys = Keys::generate();
-    let client = Client::new(keys);
+    let authenticator = SignerAuthenticator::new(Keys::generate());
+    let client = Client::builder().authenticator(authenticator).build();
 
     let relay_list: Vec<String> = relays.iter().map(|url| url.to_string()).collect();
     let kind_list: Vec<u16> = kinds.iter().map(|kind| u16::from(*kind)).collect();
@@ -82,35 +84,16 @@ async fn run_fetcher(
     tracing::info!(target: LOG_TARGET, "connected to relays");
 
     let subscription = Filter::new().limit(0).kinds(kinds.clone());
-    if let Err(err) = client.subscribe(subscription, None).await {
+    if let Err(err) = client.subscribe(subscription).await {
         tracing::error!(target: LOG_TARGET, error = %err, "failed to subscribe to source relays");
         return Err(err.into());
     }
     tracing::info!(target: LOG_TARGET, "subscribed to source relays");
 
     let mut notifications = client.notifications();
-    loop {
-        let notification = match notifications.recv().await {
-            Ok(notification) => notification,
-            Err(RecvError::Lagged(skipped)) => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    skipped,
-                    "notification consumer lagged; continuing"
-                );
-                continue;
-            }
-            Err(RecvError::Closed) => {
-                tracing::error!(
-                    target: LOG_TARGET,
-                    "notification channel closed; stopping fetcher"
-                );
-                return Err(anyhow!("notification channel closed"));
-            }
-        };
-
+    while let Some(notification) = notifications.next().await {
         match notification {
-            RelayPoolNotification::Event {
+            ClientNotification::Event {
                 relay_url, event, ..
             } => {
                 if let Err(err) = event.verify() {
@@ -130,11 +113,17 @@ async fn run_fetcher(
                     tracing::error!(target: LOG_TARGET, id = %event.id, error = %err, "failed to ingest event");
                 }
             }
-            RelayPoolNotification::Message { .. } => {}
-            RelayPoolNotification::Shutdown => {
+            ClientNotification::Message { .. } => {}
+            ClientNotification::Shutdown => {
                 tracing::info!(target: LOG_TARGET, "received shutdown signal");
                 return Ok(());
             }
         }
     }
+
+    tracing::error!(
+        target: LOG_TARGET,
+        "notification stream ended; stopping fetcher"
+    );
+    Err(anyhow!("notification stream ended"))
 }

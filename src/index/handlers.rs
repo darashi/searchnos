@@ -1,4 +1,4 @@
-use nostr_sdk::{Event, JsonUtil};
+use nostr_sdk::prelude::Event;
 use std::sync::Arc;
 
 use crate::app_state::AppState;

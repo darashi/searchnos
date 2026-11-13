@@ -1,5 +1,5 @@
 use futures::{sink::SinkExt, stream::SplitSink};
-use nostr_sdk::{prelude::RelayMessage, Event, JsonUtil, SubscriptionId};
+use nostr_sdk::prelude::{Event, RelayMessage, SubscriptionId};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use yawc::{frame::Frame, HttpWebSocket as YawcWebSocket};

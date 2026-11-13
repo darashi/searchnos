@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
-use nostr_sdk::{prelude::RelayInformationDocument, Event, JsonUtil, Kind};
+use nostr_sdk::prelude::{Event, Kind, RelayInformationDocument};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{parse_fetch_kinds, parse_src_relays, DEFAULT_FETCH_KINDS};
@@ -53,9 +53,9 @@ async fn process_message(
                 std::str::from_utf8(&payload).context("received text frame with invalid UTF-8")?;
             tracing::debug!(message_bytes = payload.len(), "received text message");
             let client_message =
-                nostr_sdk::ClientMessage::from_json(text).map_err(anyhow::Error::from)?;
+                nostr_sdk::prelude::ClientMessage::from_json(text).map_err(anyhow::Error::from)?;
             match client_message {
-                nostr_sdk::ClientMessage::Req {
+                nostr_sdk::prelude::ClientMessage::Req {
                     subscription_id,
                     filters,
                 } => {
@@ -72,11 +72,11 @@ async fn process_message(
                     )
                     .await
                 }
-                nostr_sdk::ClientMessage::Close(subscription_id) => {
+                nostr_sdk::prelude::ClientMessage::Close(subscription_id) => {
                     handle_close(subscriptions.clone(), addr.clone(), &subscription_id).await;
                     Ok(())
                 }
-                nostr_sdk::ClientMessage::Event(event) => {
+                nostr_sdk::prelude::ClientMessage::Event(event) => {
                     tracing::debug!(
                         id = %event.id,
                         kind = event.kind.as_u16(),
@@ -113,7 +113,7 @@ async fn send_notice(sender: RelaySender, msg: &str) -> anyhow::Result<()> {
 
 async fn send_closed(
     sender: RelaySender,
-    subscription_id: nostr_sdk::SubscriptionId,
+    subscription_id: nostr_sdk::prelude::SubscriptionId,
     msg: &str,
 ) -> anyhow::Result<()> {
     sender.closed(subscription_id, msg).await
@@ -810,6 +810,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
 
+    use nostr_sdk::prelude::FinalizeEvent;
+
     use super::*;
 
     fn find_available_port() -> std::io::Result<u16> {
@@ -904,14 +906,14 @@ mod tests {
         ));
         let db_path = temp_dir.display().to_string();
         let db = searchnos::db_adapter::open_db(&db_path).unwrap();
-        let keys = nostr_sdk::Keys::generate();
-        let current_event = nostr_sdk::EventBuilder::text_note("current")
-            .custom_created_at(nostr_sdk::Timestamp::from_secs(100))
-            .sign_with_keys(&keys)
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let current_event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "current")
+            .custom_created_at(nostr_sdk::prelude::Timestamp::from_secs(100))
+            .finalize(&keys)
             .unwrap();
-        let future_event = nostr_sdk::EventBuilder::text_note("future")
-            .custom_created_at(nostr_sdk::Timestamp::from_secs(101))
-            .sign_with_keys(&keys)
+        let future_event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "future")
+            .custom_created_at(nostr_sdk::prelude::Timestamp::from_secs(101))
+            .finalize(&keys)
             .unwrap();
 
         insert_event_json(&db, &current_event.as_json()).unwrap();
@@ -957,18 +959,17 @@ mod tests {
             .unwrap();
         });
 
-        let keys = nostr_sdk::Keys::generate();
-        let client = nostr_sdk::Client::new(keys);
+        let client = nostr_sdk::prelude::Client::new();
         client
             .add_relay(format!("ws://localhost:{}", args.port))
             .await
             .unwrap();
         client.connect().await;
 
-        let filter = nostr_sdk::Filter::new().search("nostr").limit(0);
-        let relay_url = format!("ws://localhost:{}", args.port);
+        let filter = nostr_sdk::prelude::Filter::new().search("nostr").limit(0);
         let res = client
-            .fetch_events_from([&relay_url], filter, Duration::from_secs(5))
+            .fetch_events(filter)
+            .timeout(Duration::from_secs(5))
             .await;
         assert!(res.is_ok());
 
@@ -995,10 +996,12 @@ mod tests {
             db_path: db_path.clone(),
             compact_workers: None,
         };
-        let keys = nostr_sdk::Keys::generate();
-        let event = nostr_sdk::EventBuilder::text_note("fresh event")
-            .custom_created_at(nostr_sdk::Timestamp::from_secs(current_unix_timestamp()))
-            .sign_with_keys(&keys)
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "fresh event")
+            .custom_created_at(nostr_sdk::prelude::Timestamp::from_secs(
+                current_unix_timestamp(),
+            ))
+            .finalize(&keys)
             .unwrap();
         {
             let db = common.open_db().unwrap();
@@ -1066,9 +1069,9 @@ mod tests {
         let response = tokio::task::spawn_blocking(move || {
             let url = format!("ws://localhost:{port}");
             let (mut socket, _) = tungstenite::connect(url).unwrap();
-            let keys = nostr_sdk::Keys::generate();
-            let event = nostr_sdk::EventBuilder::text_note("hello")
-                .sign_with_keys(&keys)
+            let keys = nostr_sdk::prelude::Keys::generate();
+            let event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "hello")
+                .finalize(&keys)
                 .unwrap();
             socket
                 .send(tungstenite::Message::Text(
@@ -1098,12 +1101,12 @@ mod tests {
         let db_path = temp_dir.join("db").display().to_string();
         let import_path = temp_dir.join("events.jsonl");
 
-        let keys = nostr_sdk::Keys::generate();
-        let allowed_event = nostr_sdk::EventBuilder::new(Kind::TextNote, "hello")
-            .sign_with_keys(&keys)
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let allowed_event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "hello")
+            .finalize(&keys)
             .unwrap();
-        let skipped_event = nostr_sdk::EventBuilder::new(Kind::Metadata, "{}")
-            .sign_with_keys(&keys)
+        let skipped_event = nostr_sdk::prelude::EventBuilder::new(Kind::Metadata, "{}")
+            .finalize(&keys)
             .unwrap();
 
         let mut file = File::create(&import_path).unwrap();

@@ -12,11 +12,9 @@ pub fn extract_text(event: &Event) -> String {
         Kind::LongFormTextNote => {
             let mut items = vec![event.content.clone()];
             for tag in event.tags.iter() {
-                match tag.as_standardized() {
-                    Some(TagStandard::Title(title)) => items.push(title.to_owned()),
-                    Some(TagStandard::Summary(summary)) => items.push(summary.to_owned()),
-                    _ => {}
-                };
+                if let ("title" | "summary", Some(value)) = (tag.kind(), tag.content()) {
+                    items.push(value.to_owned());
+                }
             }
             items.join(" ")
         }
@@ -27,21 +25,21 @@ pub fn extract_text(event: &Event) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nostr_sdk::{Keys, Kind, Tag, TagStandard};
+    use nostr_sdk::prelude::{FinalizeEvent, Keys, Kind, Tag};
 
     use crate::index::text::extract_text;
 
     #[test]
     fn test_extract_text_note() {
         let keys = Keys::generate();
-        let event = nostr_sdk::EventBuilder::new(Kind::TextNote, "hello world")
+        let event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "hello world")
             .tags([
                 Tag::identifier("foo"),
                 Tag::hashtag("bar"),
-                Tag::from_standardized(TagStandard::Title("title".to_string())),
-                Tag::from_standardized(TagStandard::Summary("summary".to_string())),
+                Tag::custom("title", ["title"]),
+                Tag::custom("summary", ["summary"]),
             ])
-            .sign_with_keys(&keys)
+            .finalize(&keys)
             .unwrap();
 
         assert_eq!(extract_text(&event), "hello world".to_string());
@@ -50,15 +48,16 @@ mod tests {
     #[test]
     fn test_extract_text_long_form_content() {
         let keys = Keys::generate();
-        let event = nostr_sdk::EventBuilder::new(Kind::LongFormTextNote, "# hello\n\nworld")
-            .tags([
-                Tag::identifier("foo"),
-                Tag::hashtag("bar"),
-                Tag::from_standardized(TagStandard::Title("title".to_string())),
-                Tag::from_standardized(TagStandard::Summary("summary".to_string())),
-            ])
-            .sign_with_keys(&keys)
-            .unwrap();
+        let event =
+            nostr_sdk::prelude::EventBuilder::new(Kind::LongFormTextNote, "# hello\n\nworld")
+                .tags([
+                    Tag::identifier("foo"),
+                    Tag::hashtag("bar"),
+                    Tag::custom("title", ["title"]),
+                    Tag::custom("summary", ["summary"]),
+                ])
+                .finalize(&keys)
+                .unwrap();
 
         assert_eq!(
             extract_text(&event),

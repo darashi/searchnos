@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Instant, SystemTime};
 
-use nostr_sdk::Kind;
+use nostr_sdk::prelude::Kind;
 use searchnos_db::SearchnosDB;
 use tracing::{info, warn};
 

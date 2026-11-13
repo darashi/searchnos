@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
 use nostr_sdk::prelude::SubscriptionId;
-use nostr_sdk::{Filter, Timestamp};
+use nostr_sdk::prelude::{Filter, Timestamp};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
