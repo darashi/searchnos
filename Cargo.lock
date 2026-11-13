@@ -559,7 +559,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1643,7 +1643,7 @@ dependencies = [
 [[package]]
 name = "searchnos-db"
 version = "0.1.0"
-source = "git+https://github.com/darashi/searchnos-db#eb47c0ac54fc0cfd4f15541ef398555fca6d7c40"
+source = "git+https://github.com/darashi/searchnos-db#859d38acf4f3c4fd9902261809985ea80f2d22b8"
 dependencies = [
  "aho-corasick",
  "clap",
@@ -1656,7 +1656,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "ndb-note-rs",
- "secp256k1 0.31.1",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1679,13 +1679,12 @@ dependencies = [
 
 [[package]]
 name = "secp256k1"
-version = "0.31.1"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c3c81b43dc2d8877c216a3fccf76677ee1ebccd429566d3e67447290d0c42b2"
+checksum = "d7f404a8dab7a7a5a631e741d8699aa9c8e1d689fc26ccf897c7187565490b69"
 dependencies = [
- "bitcoin_hashes",
  "rand 0.9.5",
- "secp256k1-sys 0.11.0",
+ "secp256k1-sys 0.14.1",
 ]
 
 [[package]]
@@ -1699,9 +1698,9 @@ dependencies = [
 
 [[package]]
 name = "secp256k1-sys"
-version = "0.11.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcb913707158fadaf0d8702c2db0e857de66eb003ccfdda5924b5f5ac98efb38"
+checksum = "f6b2992d4a3cd244539a7d5d0966aadbe5ca7fb868a5d7e38c29499b9e709bbd"
 dependencies = [
  "cc",
 ]
