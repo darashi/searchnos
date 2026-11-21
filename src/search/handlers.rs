@@ -134,6 +134,13 @@ fn spawn_subscription_task(
         if *cancel_rx.borrow() {
             return;
         }
+        if filters.is_empty() {
+            if let Err(err) = send_eose(&sender, &subscription_id).await {
+                tracing::warn!(error = %err, subscription = %subscription_id, "failed to deliver EOSE");
+            }
+            return;
+        }
+
         let mut ephemeral_events = state.ephemeral_events.subscribe();
         let started_at = Instant::now();
         let filters_json = serde_json::to_string(&filters).unwrap_or_else(|_| "[]".to_string());
@@ -259,13 +266,7 @@ fn matches_ephemeral_event(filters: &[Filter], event: &Event) -> bool {
         ..MatchEventOptions::default()
     };
     filters.iter().any(|filter| {
-        !filter.ids.as_ref().is_some_and(|ids| ids.is_empty())
-            && !filter
-                .authors
-                .as_ref()
-                .is_some_and(|authors| authors.is_empty())
-            && !filter.kinds.as_ref().is_some_and(|kinds| kinds.is_empty())
-            && filter.match_event(event, options)
+        filter.match_event(event, options)
             && filter.search.as_ref().is_some_and(|query| {
                 normalize_search_text(query)
                     .split_whitespace()
@@ -345,12 +346,18 @@ fn log_close(addr: &ClientAddr, subscription_id: &SubscriptionId) {
     }
 }
 
+fn has_empty_filter_list(filter: &Filter) -> bool {
+    filter.ids.as_ref().is_some_and(|ids| ids.is_empty())
+        || filter
+            .authors
+            .as_ref()
+            .is_some_and(|authors| authors.is_empty())
+        || filter.kinds.as_ref().is_some_and(|kinds| kinds.is_empty())
+        || filter.generic_tags.values().any(|values| values.is_empty())
+}
+
 fn validate_search_filters(filters: &[Filter]) -> Result<(), String> {
     const SEARCH_FILTER_REQUIRED: &str = "error: search filter is required";
-
-    if filters.is_empty() {
-        return Err(SEARCH_FILTER_REQUIRED.to_string());
-    }
 
     for filter in filters {
         match filter.search.as_deref() {
@@ -408,7 +415,7 @@ pub async fn handle_req(
     sender: RelaySender,
     subscriptions: SubscriptionManager,
     subscription_id: &SubscriptionId,
-    filters: Vec<Filter>,
+    mut filters: Vec<Filter>,
 ) -> Result<(), ClientMessageError> {
     let filter_count = filters.len();
     let req_span = tracing::info_span!("req", subscription = %subscription_id, filter_count);
@@ -434,6 +441,7 @@ pub async fn handle_req(
             ));
         }
 
+        filters.retain(|filter| !has_empty_filter_list(filter));
         if let Err(message) = validate_search_filters(&filters) {
             return Err(ClientMessageError::closed(subscription_id.clone(), message));
         }
@@ -491,13 +499,6 @@ mod tests {
         let filters = vec![Filter::new().search("nostr")];
 
         assert!(validate_search_filters(&filters).is_ok());
-    }
-
-    #[test]
-    fn validate_search_filters_rejects_empty_filter_list() {
-        let err = validate_search_filters(&[]).unwrap_err();
-
-        assert_eq!(err, "error: search filter is required");
     }
 
     #[test]

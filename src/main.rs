@@ -1127,11 +1127,31 @@ mod tests {
                 assert_eq!(response[2], false);
                 assert!(response[3].as_str().unwrap().starts_with("invalid:"));
 
+                for field in ["ids", "authors", "kinds", "#t"] {
+                    let mut filter = serde_json::json!({"search": "hello"});
+                    filter[field] = serde_json::json!([]);
+                    socket
+                        .send(tungstenite::Message::Text(
+                            serde_json::json!(["REQ", "empty", filter])
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                    let response: serde_json::Value =
+                        serde_json::from_str(&socket.read().unwrap().to_string()).unwrap();
+                    assert_eq!(response, serde_json::json!(["EOSE", "empty"]));
+                }
+
                 socket
                     .send(tungstenite::Message::Text(
-                        serde_json::json!(["REQ", "test", {"ids": [event.id], "search": "hello"}])
-                            .to_string()
-                            .into(),
+                        serde_json::json!([
+                            "REQ",
+                            "test",
+                            {"kinds": []},
+                            {"ids": [event.id], "search": "hello"}
+                        ])
+                        .to_string()
+                        .into(),
                     ))
                     .unwrap();
                 let response: serde_json::Value =
