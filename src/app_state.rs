@@ -7,6 +7,7 @@ use searchnos_db::SearchnosDB;
 
 pub struct AppState {
     pub db: Arc<SearchnosDB>,
+    pub allow_client_events: bool,
     pub relay_info: String,
     pub max_subscriptions: usize,
     pub max_filters: usize,

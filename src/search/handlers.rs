@@ -73,14 +73,14 @@ impl SubscriptionManager {
             guard.remove(subscription_id)
         };
 
-        if let Some(handle) = handle {
-            if let Err(err) = handle.shutdown().await {
-                tracing::debug!(
-                    error = %err,
-                    subscription = %subscription_id,
-                    "subscription task terminated with error"
-                );
-            }
+        if let Some(handle) = handle
+            && let Err(err) = handle.shutdown().await
+        {
+            tracing::debug!(
+                error = %err,
+                subscription = %subscription_id,
+                "subscription task terminated with error"
+            );
         }
     }
 
@@ -352,16 +352,16 @@ pub async fn handle_req(
 
     let subscription_id = subscription_id.clone();
     async move {
-        if let Some(num_ongoing_subscriptions) = subscriptions.len_if_new(&subscription_id).await {
-            if num_ongoing_subscriptions + 1 > state.max_subscriptions {
-                return Err(ClientMessageError::closed(
-                    subscription_id.clone(),
-                    format!(
-                        "error: too many ongoing subscriptions: {}",
-                        num_ongoing_subscriptions
-                    ),
-                ));
-            }
+        if let Some(num_ongoing_subscriptions) = subscriptions.len_if_new(&subscription_id).await
+            && num_ongoing_subscriptions + 1 > state.max_subscriptions
+        {
+            return Err(ClientMessageError::closed(
+                subscription_id.clone(),
+                format!(
+                    "error: too many ongoing subscriptions: {}",
+                    num_ongoing_subscriptions
+                ),
+            ));
         }
 
         if filters.len() > state.max_filters {

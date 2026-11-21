@@ -1,6 +1,6 @@
 # Searchnos: a NIP-50 Relay (Search Notes and Other Stuff)
 
-This is a relay server that provides a Nostr full-text search capability backed by [searchnos-db](https://github.com/darashi/searchnos-db). Client `EVENT` submissions are rejected; populate the index with source relays or the import/load commands.
+This is a relay server that provides a Nostr full-text search capability backed by [searchnos-db](https://github.com/darashi/searchnos-db). Client `EVENT` submissions are rejected by default; populate the index with source relays or the import/load commands.
 
 ## Current Limitations
 
@@ -69,6 +69,7 @@ See `compose.yaml` and `.env.example` for the configuration.
 
 `SRC_RELAYS` and `FETCH_KINDS` can be a comma-separated list.
 
+- `SEARCHNOS_ALLOW_CLIENT_EVENTS` (optional): set to `true` or pass `serve --allow-client-events` to let any WebSocket client submit signed events for testing (default: `false`). Accepted events are stored in the search database.
 - `SRC_RELAYS` (optional): comma-separated list of source relay URLs to fetch events from.
 - `FETCH_KINDS` (optional): comma-separated list of numeric event kinds to fetch or reconcile with negentropy. When unset but `SRC_RELAYS` or `NEGENTROPY_RELAYS` is provided, a default set matching the NIP-50 indexer is used (`0,1,5,30023,40,41,42,43,44`).
 - `NEGENTROPY_RELAYS` (optional): comma-separated list of relays used for negentropy reconcile. Send `SIGUSR2` to the process to reconcile recent days. Negentropy uses the same kind set as `FETCH_KINDS`.

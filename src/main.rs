@@ -16,6 +16,7 @@ use searchnos::db_adapter::{
     insert_event_json, open_db_with_compact_workers, open_db_with_snapshot_workers,
 };
 use searchnos::index::fetcher::spawn_fetcher;
+use searchnos::index::handlers::handle_update;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
@@ -77,15 +78,27 @@ async fn process_message(
                     Ok(())
                 }
                 nostr_sdk::prelude::ClientMessage::Event(event) => {
-                    tracing::debug!(
-                        id = %event.id,
-                        kind = event.kind.as_u16(),
-                        pubkey = %event.pubkey,
-                        remote_ip = %addr.socket_addr().ip(),
-                        remote_port = addr.socket_addr().port(),
-                        "rejected EVENT message"
-                    );
-                    sender.ok(&event, false, "blocked: writes disabled").await?;
+                    if !state.allow_client_events {
+                        tracing::debug!(
+                            id = %event.id,
+                            kind = event.kind.as_u16(),
+                            pubkey = %event.pubkey,
+                            remote_ip = %addr.socket_addr().ip(),
+                            remote_port = addr.socket_addr().port(),
+                            "rejected EVENT message"
+                        );
+                        sender.ok(&event, false, "blocked: writes disabled").await?;
+                    } else if let Err(err) = event.verify() {
+                        let message = format!("invalid: {err}");
+                        sender.ok(&event, false, &message).await?;
+                    } else if let Err(err) = handle_update(state, &event).await {
+                        tracing::warn!(id = %event.id, error = %err, "failed to store client event");
+                        sender
+                            .ok(&event, false, "error: failed to store event")
+                            .await?;
+                    } else {
+                        sender.ok(&event, true, "").await?;
+                    }
                     Ok(())
                 }
                 _ => Err(anyhow!("unsupported client message type").into()),
@@ -310,27 +323,27 @@ where
         if let Some(_upgrade) = parts.headers.get("upgrade") {
             Ok(ReturnRelayInfoExtractor {})
         } else {
-            if let Some(accept) = parts.headers.get("accept") {
-                if accept == "application/nostr+json" {
-                    use axum::RequestPartsExt;
-                    let Extension(state) = parts
-                        .extract::<Extension<Arc<AppState>>>()
-                        .await
-                        .map_err(|err| err.into_response())?;
-                    let relay_info = state.relay_info.clone();
+            if let Some(accept) = parts.headers.get("accept")
+                && accept == "application/nostr+json"
+            {
+                use axum::RequestPartsExt;
+                let Extension(state) = parts
+                    .extract::<Extension<Arc<AppState>>>()
+                    .await
+                    .map_err(|err| err.into_response())?;
+                let relay_info = state.relay_info.clone();
 
-                    let res = (
-                        StatusCode::OK,
-                        [
-                            ("Content-Type", "application/json"),
-                            ("Access-Control-Allow-Origin", "*"),
-                        ],
-                        relay_info,
-                    )
-                        .into_response();
+                let res = (
+                    StatusCode::OK,
+                    [
+                        ("Content-Type", "application/json"),
+                        ("Access-Control-Allow-Origin", "*"),
+                    ],
+                    relay_info,
+                )
+                    .into_response();
 
-                    return Err(res);
-                }
+                return Err(res);
             }
             Err((StatusCode::OK, "Please use a Nostr client to connect.").into_response())
         }
@@ -443,6 +456,10 @@ struct ServeArgs {
     /// Port to listen on
     #[arg(long, env, default_value_t = 3000)]
     port: u16,
+
+    /// Accept EVENT submissions from clients for testing
+    #[arg(long, env = "SEARCHNOS_ALLOW_CLIENT_EVENTS")]
+    allow_client_events: bool,
 
     /// Comma-separated list of relays to fetch events from
     #[arg(
@@ -578,6 +595,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 
     let app_state = Arc::new(AppState {
         db,
+        allow_client_events: args.allow_client_events,
         relay_info,
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
@@ -823,6 +841,7 @@ mod tests {
     fn default_serve_args(port: u16) -> ServeArgs {
         ServeArgs {
             port,
+            allow_client_events: false,
             src_relays: Vec::new(),
             fetch_kinds: Vec::new(),
             negentropy_relays: Vec::new(),
@@ -1033,31 +1052,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_messages_are_rejected() {
-        init_tracing();
+    async fn event_messages_are_rejected_by_default() {
+        check_event_submission(false).await;
+    }
 
-        let port = match find_available_port() {
-            Ok(port) => port,
+    #[tokio::test]
+    async fn event_messages_are_accepted_when_enabled() {
+        check_event_submission(true).await;
+    }
+
+    async fn check_event_submission(allow_client_events: bool) {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-                println!("skipping event_messages_are_rejected: {err}");
+                println!("skipping EVENT submission test: {err}");
                 return;
             }
-            Err(err) => panic!("failed to find available port: {err}"),
+            Err(err) => panic!("failed to bind test listener: {err}"),
         };
+        let addr = listener.local_addr().unwrap();
         let db_path = std::env::temp_dir()
-            .join(format!("searchnos-db-event-test-{}", port))
+            .join(format!("searchnos-db-event-test-{}", rand::random::<u64>()))
             .display()
             .to_string();
         let common = CommonArgs {
-            db_path: db_path.clone(),
+            db_path,
             compact_workers: None,
         };
-        let args = default_serve_args(port);
+        let mut args = default_serve_args(addr.port());
+        args.allow_client_events = allow_client_events;
         let app = app(&common, &args).await.unwrap();
-        let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
-
-        let join_handle = tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let server = tokio::spawn(async move {
             axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -1066,28 +1091,57 @@ mod tests {
             .unwrap();
         });
 
-        let response = tokio::task::spawn_blocking(move || {
-            let url = format!("ws://localhost:{port}");
-            let (mut socket, _) = tungstenite::connect(url).unwrap();
+        tokio::task::spawn_blocking(move || {
+            let (mut socket, _) = tungstenite::connect(format!("ws://{addr}")).unwrap();
             let keys = nostr_sdk::prelude::Keys::generate();
             let event = nostr_sdk::prelude::EventBuilder::new(Kind::TextNote, "hello")
                 .finalize(&keys)
                 .unwrap();
-            socket
-                .send(tungstenite::Message::Text(
-                    format!("[\"EVENT\",{}]", event.as_json()).into(),
-                ))
-                .unwrap();
-            socket.read().unwrap().to_string()
+            let mut submit = |event_json: serde_json::Value| -> serde_json::Value {
+                socket
+                    .send(tungstenite::Message::Text(
+                        serde_json::json!(["EVENT", event_json]).to_string().into(),
+                    ))
+                    .unwrap();
+                serde_json::from_str(&socket.read().unwrap().to_string()).unwrap()
+            };
+            let expected_message = if allow_client_events {
+                ""
+            } else {
+                "blocked: writes disabled"
+            };
+            assert_eq!(
+                submit(serde_json::to_value(&event).unwrap()),
+                serde_json::json!(["OK", event.id, allow_client_events, expected_message])
+            );
+
+            if allow_client_events {
+                let mut invalid_event = serde_json::to_value(&event).unwrap();
+                invalid_event["content"] = serde_json::json!("modified");
+                let response = submit(invalid_event);
+                assert_eq!(response[0], "OK");
+                assert_eq!(response[1], event.id.to_hex());
+                assert_eq!(response[2], false);
+                assert!(response[3].as_str().unwrap().starts_with("invalid:"));
+
+                socket
+                    .send(tungstenite::Message::Text(
+                        serde_json::json!(["REQ", "test", {"ids": [event.id], "search": "hello"}])
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+                let response: serde_json::Value =
+                    serde_json::from_str(&socket.read().unwrap().to_string()).unwrap();
+                assert_eq!(response, serde_json::json!(["EVENT", "test", event]));
+            }
         })
         .await
         .unwrap();
 
-        assert!(response.contains("\"OK\""));
-        assert!(response.contains("false"));
-        assert!(response.contains("blocked: writes disabled"));
-
-        join_handle.abort();
+        server.abort();
+        let _ = server.await;
+        std::fs::remove_dir_all(&common.db_path).unwrap();
     }
 
     #[tokio::test]
