@@ -1,15 +1,15 @@
 use crate::app_state::AppState;
 use crate::client_addr::ClientAddr;
 use crate::relay_sender::RelaySender;
-use nostr_sdk::prelude::SubscriptionId;
-use nostr_sdk::prelude::{Filter, Timestamp};
+use nostr_sdk::prelude::{Event, Filter, Kind, MatchEventOptions, SubscriptionId, Timestamp};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, oneshot, watch};
+use tokio::sync::{Mutex, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+use unicode_normalization::UnicodeNormalization;
 
 const DEFAULT_SEARCH_LIMIT: usize = 100;
 const MAX_SEARCH_LIMIT: usize = 1000;
@@ -134,6 +134,7 @@ fn spawn_subscription_task(
         if *cancel_rx.borrow() {
             return;
         }
+        let mut ephemeral_events = state.ephemeral_events.subscribe();
         let started_at = Instant::now();
         let filters_json = serde_json::to_string(&filters).unwrap_or_else(|_| "[]".to_string());
         let mut subscription = match state.db.clone().subscribe(&filters_json) {
@@ -160,6 +161,9 @@ fn spawn_subscription_task(
                     match item {
                         Some(searchnos_db::StreamItem::Event(event_json)) => {
                             if !snapshot_complete {
+                                if is_ephemeral_event_json(&event_json) {
+                                    continue;
+                                }
                                 hits += 1;
                             }
                             if let Err(err) = send_event_json(&sender, &subscription_id, &event_json).await {
@@ -203,11 +207,70 @@ fn spawn_subscription_task(
                         }
                     }
                 }
+                result = ephemeral_events.recv(), if snapshot_complete => {
+                    match result {
+                        Ok(event) if matches_ephemeral_event(&filters, &event) => {
+                            if let Err(err) = send_event_json(&sender, &subscription_id, &event.as_json()).await {
+                                tracing::warn!(error = %err, subscription = %subscription_id, "failed to deliver ephemeral event");
+                                return;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let message = "error: ephemeral event stream lagged";
+                            if let Err(err) = send_closed(&sender, &subscription_id, message).await {
+                                tracing::warn!(error = %err, subscription = %subscription_id, "failed to deliver CLOSED");
+                            }
+                            return;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    }
+                }
                 _ = wait_for_cancel(&mut cancel_rx) => {
                     return;
                 }
             }
         }
+    })
+}
+
+fn is_ephemeral_event_json(event_json: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct EventKind {
+        kind: Kind,
+    }
+
+    serde_json::from_str::<EventKind>(event_json).is_ok_and(|event| event.kind.is_ephemeral())
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.nfkc()
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn matches_ephemeral_event(filters: &[Filter], event: &Event) -> bool {
+    let content = normalize_search_text(&event.content);
+    let options = MatchEventOptions {
+        nip50: false,
+        ..MatchEventOptions::default()
+    };
+    filters.iter().any(|filter| {
+        !filter.ids.as_ref().is_some_and(|ids| ids.is_empty())
+            && !filter
+                .authors
+                .as_ref()
+                .is_some_and(|authors| authors.is_empty())
+            && !filter.kinds.as_ref().is_some_and(|kinds| kinds.is_empty())
+            && filter.match_event(event, options)
+            && filter.search.as_ref().is_some_and(|query| {
+                normalize_search_text(query)
+                    .split_whitespace()
+                    .all(|term| content.contains(term))
+            })
     })
 }
 

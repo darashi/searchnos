@@ -595,6 +595,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 
     let app_state = Arc::new(AppState {
         db,
+        ephemeral_events: tokio::sync::broadcast::channel(1024).0,
         allow_client_events: args.allow_client_events,
         relay_info,
         max_subscriptions: args.max_subscriptions,
@@ -738,16 +739,18 @@ fn import_blocking(common: CommonArgs, args: ImportArgs) -> Result<ImportSummary
             continue;
         }
 
-        if let Some(ref kinds) = allowed_kinds {
-            let event: Event = serde_json::from_str(&raw_line)
-                .with_context(|| format!("failed to parse event at line {}", idx + 1))?;
-            if !kinds.contains(&event.kind) {
-                skipped_kind += 1;
-                if let Some(pb) = progress_bar.as_ref() {
-                    pb.inc(1);
-                }
-                continue;
+        let event: Event = serde_json::from_str(&raw_line)
+            .with_context(|| format!("failed to parse event at line {}", idx + 1))?;
+        if event.kind.is_ephemeral()
+            || allowed_kinds
+                .as_ref()
+                .is_some_and(|kinds| !kinds.contains(&event.kind))
+        {
+            skipped_kind += 1;
+            if let Some(pb) = progress_bar.as_ref() {
+                pb.inc(1);
             }
+            continue;
         }
 
         insert_event_json(&db, &raw_line)
@@ -1134,6 +1137,10 @@ mod tests {
                 let response: serde_json::Value =
                     serde_json::from_str(&socket.read().unwrap().to_string()).unwrap();
                 assert_eq!(response, serde_json::json!(["EVENT", "test", event]));
+                let eose: serde_json::Value =
+                    serde_json::from_str(&socket.read().unwrap().to_string()).unwrap();
+                assert_eq!(eose, serde_json::json!(["EOSE", "test"]));
+                check_ephemeral_delivery(addr, &mut socket, &keys);
             }
         })
         .await
@@ -1142,6 +1149,63 @@ mod tests {
         server.abort();
         let _ = server.await;
         std::fs::remove_dir_all(&common.db_path).unwrap();
+    }
+
+    fn check_ephemeral_delivery(
+        addr: SocketAddr,
+        publisher: &mut tungstenite::WebSocket<
+            tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
+        >,
+        keys: &nostr_sdk::prelude::Keys,
+    ) {
+        let (mut subscriber, _) = tungstenite::connect(format!("ws://{addr}")).unwrap();
+        if let tungstenite::stream::MaybeTlsStream::Plain(stream) = subscriber.get_ref() {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+        }
+        let send = |socket: &mut tungstenite::WebSocket<_>, message: serde_json::Value| {
+            socket
+                .send(tungstenite::Message::Text(message.to_string().into()))
+                .unwrap();
+        };
+        let read = |socket: &mut tungstenite::WebSocket<_>| {
+            serde_json::from_str::<serde_json::Value>(&socket.read().unwrap().to_string()).unwrap()
+        };
+
+        send(
+            &mut subscriber,
+            serde_json::json!(["REQ", "live", {"kinds": [20000], "search": "WORLD hello", "limit": 0}]),
+        );
+        assert_eq!(read(&mut subscriber), serde_json::json!(["EOSE", "live"]));
+
+        let kind = Kind::from(20000);
+        let non_matching = nostr_sdk::prelude::EventBuilder::new(kind, "hello")
+            .finalize(keys)
+            .unwrap();
+        let matching = nostr_sdk::prelude::EventBuilder::new(kind, "ＨＥＬＬＯ world")
+            .finalize(keys)
+            .unwrap();
+        for event in [&non_matching, &matching] {
+            send(publisher, serde_json::json!(["EVENT", event]));
+            assert_eq!(
+                read(publisher),
+                serde_json::json!(["OK", event.id, true, ""])
+            );
+        }
+        assert_eq!(
+            read(&mut subscriber),
+            serde_json::json!(["EVENT", "live", matching])
+        );
+
+        send(
+            &mut subscriber,
+            serde_json::json!(["REQ", "snapshot", {"kinds": [20000], "search": "hello"}]),
+        );
+        assert_eq!(
+            read(&mut subscriber),
+            serde_json::json!(["EOSE", "snapshot"])
+        );
     }
 
     #[tokio::test]

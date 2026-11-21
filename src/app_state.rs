@@ -3,10 +3,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
+use nostr_sdk::prelude::Event;
 use searchnos_db::SearchnosDB;
+use tokio::sync::broadcast;
 
 pub struct AppState {
     pub db: Arc<SearchnosDB>,
+    pub ephemeral_events: broadcast::Sender<Arc<Event>>,
     pub allow_client_events: bool,
     pub relay_info: String,
     pub max_subscriptions: usize,

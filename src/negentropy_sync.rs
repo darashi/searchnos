@@ -193,7 +193,7 @@ fn reconcile_unix_day_once(
                 stats.invalid += 1;
                 continue;
             }
-            if !is_allowed_kind(event.kind(), kinds) {
+            if (20_000..30_000).contains(&event.kind()) || !is_allowed_kind(event.kind(), kinds) {
                 stats.invalid += 1;
                 continue;
             }
