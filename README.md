@@ -82,6 +82,34 @@ See `compose.yaml` and `.env.example` for the configuration.
 - `RUST_LOG` (optional): tracing filter (default: `info`). Per-message diagnostics, rejected subscriptions, and fetched-event logs use `debug`. Received message bodies are not logged.
 - `SEARCHNOS_RESPECT_FORWARDED` (optional): when set (or `--respect-forwarded` is passed to the CLI), WebSocket connection logs prefer the client inferred from the `Forwarded` header. Enable this only when the values are provided by a trusted reverse proxy.
 
+### NIP-11 relay information
+
+Set the following environment variables or pass the corresponding options to
+`searchnos serve`. Only configured optional fields appear in the response.
+
+| NIP-11 field | Environment variable | CLI option | Value |
+| --- | --- | --- | --- |
+| `name` | `RELAY_NAME` | `--relay-name` | Relay name (default `searchnos`) |
+| `description` | `RELAY_DESCRIPTION` | `--relay-description` | Relay description (default `searchnos relay`) |
+| `pubkey` | `RELAY_PUBKEY` | `--relay-pubkey` | Administrator's public key (hex or npub) |
+| `self` | `RELAY_SELF` | `--relay-self` | Relay's own public key (hex or npub) |
+| `contact` | `RELAY_CONTACT` | `--relay-contact` | Administrator contact URI, such as `mailto:admin@example.org` |
+| `icon` | `RELAY_ICON` | `--relay-icon` | Icon image URL |
+| `banner` | `RELAY_BANNER` | `--relay-banner` | Banner image URL |
+| `terms_of_service` | `RELAY_TERMS_OF_SERVICE` | `--relay-terms-of-service` | Terms of service URL |
+
+The relay publishes keys in hex. It also reports its supported NIPs, software
+URL, version, and the limits it enforces. Under `limitation`,
+`max_subscriptions` comes from `MAX_SUBSCRIPTIONS` or `--max-subscriptions`
+(default 20 per connection). Each search filter defaults to 100 results
+(`default_limit`) and is capped at 1000 (`max_limit`).
+
+Restart the relay after changing its settings. With Docker Compose, edit
+`.env` and run `docker compose up -d` to apply the changes. To inspect the
+published document, run
+
+    curl -H 'Accept: application/nostr+json' http://localhost:3000/
+
 ## Logging
 
 The default log level is `info`. Use `RUST_LOG=searchnos=debug,searchnos_db=debug` for per-message diagnostics during troubleshooting, then restore `info` for normal operation.

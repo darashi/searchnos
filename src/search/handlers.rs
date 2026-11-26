@@ -11,8 +11,8 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 use unicode_normalization::UnicodeNormalization;
 
-const DEFAULT_SEARCH_LIMIT: usize = 100;
-const MAX_SEARCH_LIMIT: usize = 1000;
+pub const DEFAULT_SEARCH_LIMIT: usize = 100;
+pub const MAX_SEARCH_LIMIT: usize = 1000;
 const SECONDS_PER_DAY: u64 = 86_400;
 
 pub struct SubscriptionHandle {

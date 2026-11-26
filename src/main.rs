@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
-use nostr_sdk::prelude::{Event, Kind};
+use nostr_sdk::prelude::{Event, Kind, PublicKey, Url};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{DEFAULT_FETCH_KINDS, parse_fetch_kinds, parse_src_relays};
@@ -20,7 +20,8 @@ use searchnos::index::handlers::handle_update;
 use searchnos::maintenance::{negentropy_relays, spawn_negentropy_signal_listener};
 use searchnos::relay_sender::RelaySender;
 use searchnos::search::handlers::{
-    ClientMessageError, SubscriptionManager, handle_close, handle_req,
+    ClientMessageError, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, SubscriptionManager, handle_close,
+    handle_req,
 };
 use searchnos_db::SearchnosDB;
 use std::collections::HashSet;
@@ -455,7 +456,7 @@ enum Command {
         #[arg(value_name = "INPUT_PATH", required = true, num_args = 1..)]
         input_paths: Vec<PathBuf>,
     },
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     Import(ImportArgs),
 }
 
@@ -543,6 +544,57 @@ struct ServeArgs {
         default_value = "searchnos relay"
     )]
     relay_description: String,
+
+    /// Public key of the relay administrator
+    #[arg(long, env)]
+    relay_pubkey: Option<PublicKey>,
+
+    /// Relay's own public key
+    #[arg(long, env)]
+    relay_self: Option<PublicKey>,
+
+    /// Administrator contact URI, for example mailto:admin@example.org
+    #[arg(long, env)]
+    relay_contact: Option<Url>,
+
+    /// URL of the relay icon
+    #[arg(long, env)]
+    relay_icon: Option<Url>,
+
+    /// URL of the relay banner
+    #[arg(long, env)]
+    relay_banner: Option<Url>,
+
+    /// URL of the relay terms of service
+    #[arg(long, env)]
+    relay_terms_of_service: Option<Url>,
+}
+
+impl ServeArgs {
+    fn relay_information(&self, version: &str) -> serde_json::Value {
+        let mut info = serde_json::json!({
+            "name": self.relay_name,
+            "description": self.relay_description,
+            "pubkey": self.relay_pubkey,
+            "self": self.relay_self,
+            "contact": self.relay_contact,
+            "icon": self.relay_icon,
+            "banner": self.relay_banner,
+            "terms_of_service": self.relay_terms_of_service,
+            "supported_nips": [1, 9, 11, 22, 28, 40, 50],
+            "software": env!("CARGO_PKG_REPOSITORY"),
+            "version": version,
+            "limitation": {
+                "max_subscriptions": self.max_subscriptions,
+                "default_limit": DEFAULT_SEARCH_LIMIT,
+                "max_limit": MAX_SEARCH_LIMIT,
+            },
+        });
+        info.as_object_mut()
+            .expect("relay information is a JSON object")
+            .retain(|_, value| !value.is_null());
+        info
+    }
 }
 
 #[derive(ClapArgs, Debug)]
@@ -591,20 +643,11 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         args.max_search_threads,
     )?);
 
-    let relay_info = serde_json::json!({
-        "name": args.relay_name,
-        "description": args.relay_description,
-        "supported_nips": [1, 9, 11, 22, 28, 40, 50],
-        "software": env!("CARGO_PKG_REPOSITORY"),
-        "version": version,
-    })
-    .to_string();
-
     let app_state = Arc::new(AppState {
         db,
         ephemeral_events: tokio::sync::broadcast::channel(1024).0,
         allow_client_events: args.allow_client_events,
-        relay_info,
+        relay_info: args.relay_information(&version).to_string(),
         max_subscriptions: args.max_subscriptions,
         max_filters: args.max_filters,
         search_days: args.search_days,
@@ -678,7 +721,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Export => cmd::export::run(common).await,
         Command::Dump { output_path } => cmd::dump::run(common, output_path).await,
         Command::Load { input_paths } => cmd::load::run(common, input_paths).await,
-        Command::Serve(args) => run_serve(common, args).await,
+        Command::Serve(args) => run_serve(common, *args).await,
         Command::Import(args) => run_import(common, args).await,
     }
 }
@@ -865,6 +908,12 @@ mod tests {
             respect_forwarded_headers: false,
             relay_name: "searchnos".to_string(),
             relay_description: "searchnos relay".to_string(),
+            relay_pubkey: None,
+            relay_self: None,
+            relay_contact: None,
+            relay_icon: None,
+            relay_banner: None,
+            relay_terms_of_service: None,
         }
     }
 
@@ -883,6 +932,50 @@ mod tests {
         let result = Cli::try_parse_from(["searchnos", "serve", "--max-search-threads", "0"]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_information_uses_configured_metadata() {
+        use nostr_sdk::prelude::{Keys, ToBech32};
+
+        let admin = Keys::generate().public_key();
+        let relay = Keys::generate().public_key();
+        let cli = Cli::try_parse_from([
+            "searchnos",
+            "serve",
+            "--relay-name",
+            "Search Relay",
+            "--relay-description",
+            "Search public notes",
+            "--relay-pubkey",
+            &admin.to_bech32().unwrap(),
+            "--relay-self",
+            &relay.to_hex(),
+            "--relay-contact",
+            "mailto:admin@example.org",
+            "--relay-icon",
+            "https://example.org/icon.png",
+            "--relay-banner",
+            "https://example.org/banner.png",
+            "--relay-terms-of-service",
+            "https://example.org/terms",
+            "--max-subscriptions",
+            "7",
+        ])
+        .unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve command");
+        };
+        let info = args.relay_information("test");
+        assert_eq!(info["name"], "Search Relay");
+        assert_eq!(info["description"], "Search public notes");
+        assert_eq!(info["pubkey"], admin.to_hex());
+        assert_eq!(info["self"], relay.to_hex());
+        assert_eq!(info["contact"], "mailto:admin@example.org");
+        assert_eq!(info["icon"], "https://example.org/icon.png");
+        assert_eq!(info["banner"], "https://example.org/banner.png");
+        assert_eq!(info["terms_of_service"], "https://example.org/terms");
+        assert_eq!(info["limitation"]["max_subscriptions"], 7);
     }
 
     fn read_http_response(
@@ -959,6 +1052,18 @@ mod tests {
         let software: axum::http::Uri = info["software"].as_str().unwrap().parse().unwrap();
         assert!(software.scheme().is_some() && software.authority().is_some());
         assert!(info.values().all(|value| !value.is_null()));
+        for field in [
+            "pubkey",
+            "self",
+            "contact",
+            "icon",
+            "banner",
+            "terms_of_service",
+        ] {
+            assert!(!info.contains_key(field), "unexpected field: {field}");
+        }
+        assert_eq!(info["limitation"]["default_limit"], DEFAULT_SEARCH_LIMIT);
+        assert_eq!(info["limitation"]["max_limit"], MAX_SEARCH_LIMIT);
     }
 
     #[test]
