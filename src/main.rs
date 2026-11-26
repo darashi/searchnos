@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressState, ProgressStyle};
-use nostr_sdk::prelude::{Event, Kind, RelayInformationDocument};
+use nostr_sdk::prelude::{Event, Kind};
 use searchnos::app_state::AppState;
 use searchnos::client_addr::ClientAddr;
 use searchnos::config::{DEFAULT_FETCH_KINDS, parse_fetch_kinds, parse_src_relays};
@@ -311,6 +311,16 @@ fn current_unix_timestamp() -> u64 {
         .as_secs()
 }
 
+const RELAY_INFO_CORS_HEADERS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET"),
+    ("Access-Control-Allow-Headers", "Accept"),
+];
+
+async fn relay_info_preflight() -> impl IntoResponse {
+    (StatusCode::NO_CONTENT, RELAY_INFO_CORS_HEADERS)
+}
+
 struct ReturnRelayInfoExtractor {}
 
 impl<S> FromRequestParts<S> for ReturnRelayInfoExtractor
@@ -335,10 +345,8 @@ where
 
                 let res = (
                     StatusCode::OK,
-                    [
-                        ("Content-Type", "application/json"),
-                        ("Access-Control-Allow-Origin", "*"),
-                    ],
+                    RELAY_INFO_CORS_HEADERS,
+                    [("Content-Type", "application/json")],
                     relay_info,
                 )
                     .into_response();
@@ -559,9 +567,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         env!("CARGO_PKG_VERSION"),
         env!("GIT_HASH").chars().take(7).collect::<String>()
     );
-    let pkg_name = env!("CARGO_PKG_NAME").to_string();
-
-    tracing::info!("{} {}", pkg_name, version);
+    tracing::info!("{} {}", env!("CARGO_PKG_NAME"), version);
 
     let src_relays = parse_src_relays(&args.src_relays)?;
     let negentropy_relays = negentropy_relays(args.negentropy_relays.clone());
@@ -585,13 +591,14 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
         args.max_search_threads,
     )?);
 
-    let mut relay_info = RelayInformationDocument::new();
-    relay_info.name = Some(args.relay_name.clone());
-    relay_info.description = Some(args.relay_description.clone());
-    relay_info.supported_nips = Some(vec![1, 9, 11, 22, 28, 40, 50]);
-    relay_info.software = Some(pkg_name);
-    relay_info.version = Some(version);
-    let relay_info = serde_json::to_string(&relay_info)?;
+    let relay_info = serde_json::json!({
+        "name": args.relay_name,
+        "description": args.relay_description,
+        "supported_nips": [1, 9, 11, 22, 28, 40, 50],
+        "software": env!("CARGO_PKG_REPOSITORY"),
+        "version": version,
+    })
+    .to_string();
 
     let app_state = Arc::new(AppState {
         db,
@@ -644,7 +651,7 @@ async fn app(common: &CommonArgs, args: &ServeArgs) -> anyhow::Result<Router> {
 
     let app = Router::new()
         .route("/healthz", get(health_check))
-        .route("/", get(websocket_handler))
+        .route("/", get(websocket_handler).options(relay_info_preflight))
         .layer(Extension(app_state));
 
     Ok(app)
@@ -878,7 +885,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn read_http_response(port: u16, path: &str) -> std::io::Result<String> {
+    fn read_http_response(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> std::io::Result<String> {
         let mut stream = loop {
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(stream) => break stream,
@@ -890,12 +902,63 @@ mod tests {
         };
         write!(
             stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
         )?;
+        for (name, value) in headers {
+            write!(stream, "{name}: {value}\r\n")?;
+        }
+        stream.write_all(b"\r\n")?;
 
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
         Ok(response)
+    }
+
+    fn check_relay_information(port: u16) {
+        let origin = ("Origin", "https://example.org");
+        let get = read_http_response(
+            port,
+            "GET",
+            "/",
+            &[origin, ("Accept", "application/nostr+json")],
+        )
+        .unwrap();
+        let options = read_http_response(
+            port,
+            "OPTIONS",
+            "/",
+            &[
+                origin,
+                ("Access-Control-Request-Method", "GET"),
+                ("Access-Control-Request-Headers", "Accept"),
+            ],
+        )
+        .unwrap();
+        let (headers, body) = get.split_once("\r\n\r\n").unwrap();
+        let (preflight_headers, preflight_body) = options.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK"));
+        assert!(preflight_headers.starts_with("HTTP/1.1 204 No Content"));
+        assert!(preflight_body.is_empty());
+        for response in [headers, preflight_headers] {
+            for expected in [
+                "Access-Control-Allow-Origin: *",
+                "Access-Control-Allow-Methods: GET",
+                "Access-Control-Allow-Headers: Accept",
+            ] {
+                assert!(
+                    response
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case(expected)),
+                    "missing {expected}"
+                );
+            }
+        }
+        let info: serde_json::Map<String, serde_json::Value> = serde_json::from_str(body).unwrap();
+        assert_eq!(info["name"], "searchnos");
+        assert_eq!(info["software"], env!("CARGO_PKG_REPOSITORY"));
+        let software: axum::http::Uri = info["software"].as_str().unwrap().parse().unwrap();
+        assert!(software.scheme().is_some() && software.authority().is_some());
+        assert!(info.values().all(|value| !value.is_null()));
     }
 
     #[test]
@@ -981,6 +1044,10 @@ mod tests {
             .unwrap();
         });
 
+        tokio::task::spawn_blocking(move || check_relay_information(port))
+            .await
+            .unwrap();
+
         let client = nostr_sdk::prelude::Client::new();
         client
             .add_relay(format!("ws://localhost:{}", args.port))
@@ -1043,10 +1110,11 @@ mod tests {
             .unwrap();
         });
 
-        let response = tokio::task::spawn_blocking(move || read_http_response(port, "/healthz"))
-            .await
-            .unwrap()
-            .unwrap();
+        let response =
+            tokio::task::spawn_blocking(move || read_http_response(port, "GET", "/healthz", &[]))
+                .await
+                .unwrap()
+                .unwrap();
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("OK latest_event_age_seconds="));
