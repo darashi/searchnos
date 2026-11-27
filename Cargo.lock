@@ -1222,7 +1222,7 @@ dependencies = [
 [[package]]
 name = "ndb-note-rs"
 version = "0.1.0"
-source = "git+https://github.com/darashi/ndb-note-rs#bc9d94f198fa987a018d7ee1ab0b372cdf3d812b"
+source = "git+https://github.com/darashi/ndb-note-rs#635ffe9a2d3e7ea8bf075a61a5b1296a7c197293"
 
 [[package]]
 name = "negentropy"
